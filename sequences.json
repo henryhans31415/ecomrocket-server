@@ -1,0 +1,99 @@
+[
+  {
+    "id": "fba_program",
+    "title": "Amazon FBA Launch Program",
+    "description": "A step‑by‑step program to launch your first product on Amazon using the FBA model.",
+    "sequences": [
+      {
+        "id": "foundation",
+        "title": "Foundation",
+        "description": "Set up the legal and operational basics for your e‑commerce business.",
+        "price_usd": 0,
+        "tasks": [
+          {
+            "id": "register_llc",
+            "title": "Register your LLC",
+            "instructions": [
+              "Choose your state or jurisdiction.",
+              "File the articles of organization.",
+              "Store your official documents safely."
+            ],
+            "resources": [
+              "https://example.com/llc-guide",
+              "https://example.com/op-agreement-template"
+            ],
+            "xp": 20
+          },
+          {
+            "id": "open_bank_account",
+            "title": "Open a business bank account",
+            "instructions": [
+              "Research banks with favourable fees and online services.",
+              "Prepare your LLC documents and EIN.",
+              "Open the account and obtain debit cards."
+            ],
+            "resources": [
+              "https://example.com/business-banking"
+            ],
+            "xp": 10
+          },
+          {
+            "id": "create_seller_central",
+            "title": "Create your Amazon Seller Central account",
+            "instructions": [
+              "Navigate to Amazon Seller Central and begin registration.",
+              "Provide business and tax information.",
+              "Verify your identity and finish the setup."
+            ],
+            "resources": [
+              "https://sellercentral.amazon.com"
+            ],
+            "xp": 15
+          }
+        ]
+      },
+      {
+        "id": "validate",
+        "title": "Validate",
+        "description": "Identify and validate product opportunities through data driven research.",
+        "price_usd": 99,
+        "prereq": "foundation",
+        "tasks": [
+          {
+            "id": "score_opportunities",
+            "title": "Score five product opportunities",
+            "instructions": [
+              "Use the opportunity scoring spreadsheet to assess demand and competition.",
+              "Ensure each product meets minimum margin thresholds.",
+              "Upload your completed sheet."
+            ],
+            "resources": [
+              "https://example.com/opportunity-score-sheet"
+            ],
+            "xp": 30
+          },
+          {
+            "id": "supplier_shortlist",
+            "title": "Create a supplier shortlist",
+            "instructions": [
+              "For your top two products, research at least three suppliers each.",
+              "Record pricing, MOQs, and compliance considerations.",
+              "Upload your shortlist document."
+            ],
+            "resources": [
+              "https://example.com/rfq-guide"
+            ],
+            "xp": 25
+          }
+        ],
+        "gate": {
+          "rubric": [
+            "Provide at least five scored products with calculated margin and competition notes.",
+            "Show evidence of at least three suppliers per shortlisted product.",
+            "Include notes on risks and next steps."
+          ]
+        }
+      }
+    ]
+  }
+]
