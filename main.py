@@ -557,6 +557,94 @@ def award_badge(tenant_id: str, user_id: str, req: AwardBadgeRequest):
 def health():
     return {"status": "ok"}
 
+# ---------------------------------------------------------------------------
+# Program and sequence management endpoints
+
+@app.get(
+    "/tenant/{tenant_id}/programs",
+    summary="List all programs for a tenant",
+)
+def list_programs(tenant_id: str):
+    """
+    Return the program definitions for a tenant. Each program includes
+    its sequences and tasks. This endpoint is useful for the B2B
+    dashboard to allow owners to view and manage their program
+    structure.
+    """
+    tenant = get_tenant(tenant_id)
+    return list(tenant.programs.values())
+
+
+@app.post(
+    "/tenant/{tenant_id}/program",
+    summary="Create a new program for a tenant",
+)
+def create_program(tenant_id: str, program: ProgramDefinition):
+    """
+    Add a new program to the tenant. The request body must include a
+    complete ProgramDefinition with at least one sequence. Program IDs
+    must be unique within the tenant. In production you would validate
+    that the caller has permission to modify programs. When a program
+    is created it is immediately available for onboarding new users.
+    """
+    tenant = get_tenant(tenant_id)
+    if program.id in tenant.programs:
+        raise HTTPException(status_code=400, detail="Program ID already exists")
+    tenant.programs[program.id] = program
+    return program
+
+
+@app.post(
+    "/tenant/{tenant_id}/program/{program_id}/sequence",
+    summary="Add a new sequence to an existing program",
+)
+def add_sequence(tenant_id: str, program_id: str, sequence: SequenceDefinition):
+    """
+    Append a sequence to an existing program. Sequences are ordered in
+    the order they are added. The request body should provide a
+    SequenceDefinition with tasks and optional gate. Sequence IDs must
+    be unique within the program. If you need to insert a sequence in
+    the middle, you can extend this handler to accept an index.
+    """
+    tenant = get_tenant(tenant_id)
+    if program_id not in tenant.programs:
+        raise HTTPException(status_code=404, detail="Program not found")
+    program = tenant.programs[program_id]
+    # Ensure uniqueness of sequence id
+    if any(seq.id == sequence.id for seq in program.sequences):
+        raise HTTPException(status_code=400, detail="Sequence ID already exists in program")
+    program.sequences.append(sequence)
+    return sequence
+
+
+@app.post(
+    "/tenant/{tenant_id}/program/{program_id}/sequence/{sequence_id}/task",
+    summary="Add a new task to a sequence",
+)
+def add_task(
+    tenant_id: str,
+    program_id: str,
+    sequence_id: str,
+    task: TaskDefinition,
+):
+    """
+    Append a task definition to an existing sequence in a program. Tasks
+    within a sequence are executed in the order listed. Task IDs must
+    be unique within the sequence. This endpoint enables owners to
+    iterate on their curriculum without modifying code.
+    """
+    tenant = get_tenant(tenant_id)
+    if program_id not in tenant.programs:
+        raise HTTPException(status_code=404, detail="Program not found")
+    program = tenant.programs[program_id]
+    sequence = next((seq for seq in program.sequences if seq.id == sequence_id), None)
+    if sequence is None:
+        raise HTTPException(status_code=404, detail="Sequence not found")
+    if any(t.id == task.id for t in sequence.tasks):
+        raise HTTPException(status_code=400, detail="Task ID already exists in sequence")
+    sequence.tasks.append(task)
+    return task
+
 
 if __name__ == "__main__":
     import uvicorn
