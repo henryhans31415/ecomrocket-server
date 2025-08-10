@@ -126,6 +126,13 @@ class UserProgress(BaseModel):
     xp: int = 0
     mentorship_eligible: bool = False
 
+    # Track which paid sequences the user has unlocked. Keys are sequence
+    # IDs and values are booleans indicating purchase status. In the free
+    # foundation sequence this map will be empty. The chat adapters can
+    # call the purchase endpoint to toggle entries here once a payment
+    # succeeds. See `purchase_sequence` below.
+    unlocked_sequences: Dict[str, bool] = Field(default_factory=dict)
+
 
 class Tenant(BaseModel):
     """A tenant represents a customer of the platform (e.g. ecomrocket.ai for
@@ -220,6 +227,18 @@ class GateResultRequest(BaseModel):
     feedback: Optional[str] = None
 
 
+class PurchaseSequenceRequest(BaseModel):
+    """Request body for purchasing a paid sequence.
+
+    The caller should include the ID of the sequence being purchased. In
+    a production system this endpoint would verify payment status via a
+    webhook from Stripe or Telegram Stars. Here we simply flag the
+    sequence as unlocked on the user progress record.
+    """
+
+    sequence_id: str
+
+
 @app.post("/tenant", summary="Create a new tenant")
 def create_tenant_endpoint(name: str):
     """Create a tenant. Use this to bootstrap ecomrocket.ai and
@@ -259,6 +278,18 @@ def get_next_tasks(tenant_id: str, user_id: str):
     if progress.current_sequence_index >= len(program.sequences):
         return {"message": "Program complete", "next_tasks": []}
     sequence = program.sequences[progress.current_sequence_index]
+    # If the sequence requires payment and has not been unlocked, do not
+    # return any tasks. The chat adapter can surface a paywall message
+    # describing the benefits and price. Once purchased via the
+    # /purchase endpoint the user can proceed.
+    if sequence.price_usd > 0 and not progress.unlocked_sequences.get(sequence.id, False):
+        return {
+            "sequence": sequence.title,
+            "tasks": [],
+            "locked": True,
+            "price_usd": sequence.price_usd,
+            "message": "This sequence requires an upgrade to unlock."
+        }
     next_tasks = []
     for task in sequence.tasks:
         if task.id not in progress.completed_tasks and task.id not in progress.blocked_tasks:
@@ -331,6 +362,62 @@ def gate_result(tenant_id: str, user_id: str, req: GateResultRequest):
         progress.current_sequence_index += 1
     # else: remain in sequence; coach may prescribe remedial work
     return progress
+
+
+# ---------------------------------------------------------------------------
+# Additional endpoints for purchases, mentorship and admin views
+
+@app.post(
+    "/tenant/{tenant_id}/user/{user_id}/purchase",
+    summary="Mark a paid sequence as purchased",
+)
+def purchase_sequence(tenant_id: str, user_id: str, req: PurchaseSequenceRequest):
+    """
+    Flag a sequence as unlocked for a given user. This endpoint is called by
+    the chat adapter after a successful payment. The sequence ID must
+    correspond to one of the program's sequences. Once unlocked, the user
+    can progress into that sequence when prerequisites are met. Purchases
+    do not advance the current sequence automatically; users must still
+    complete tasks or pass gates.
+    """
+    tenant = get_tenant(tenant_id)
+    progress = get_user_progress(tenant, user_id)
+    program = tenant.programs[progress.program_id]
+    if not any(seq.id == req.sequence_id for seq in program.sequences):
+        raise HTTPException(status_code=404, detail="Sequence not found in program")
+    progress.unlocked_sequences[req.sequence_id] = True
+    return {"unlocked_sequences": progress.unlocked_sequences}
+
+
+@app.post(
+    "/tenant/{tenant_id}/user/{user_id}/mentorship/apply",
+    summary="Apply for mentorship eligibility",
+)
+def apply_for_mentorship(tenant_id: str, user_id: str):
+    """
+    Mark a user as eligible for the high‑touch mentorship tier. In a real
+    system you would evaluate user progress, XP and other metrics before
+    flipping this flag. Here we simply set it to True and return the
+    updated progress record.
+    """
+    tenant = get_tenant(tenant_id)
+    progress = get_user_progress(tenant, user_id)
+    progress.mentorship_eligible = True
+    return progress
+
+
+@app.get(
+    "/tenant/{tenant_id}/users",
+    summary="List all users and their progress for a tenant",
+)
+def list_users(tenant_id: str):
+    """
+    Return all user progress records for a tenant. This is useful for
+    building the owner dashboard or retrieving aggregated metrics. In
+    production you would restrict this endpoint to authenticated owners.
+    """
+    tenant = get_tenant(tenant_id)
+    return list(tenant.users.values())
 
 
 @app.get(
