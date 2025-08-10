@@ -133,6 +133,23 @@ class UserProgress(BaseModel):
     # succeeds. See `purchase_sequence` below.
     unlocked_sequences: Dict[str, bool] = Field(default_factory=dict)
 
+    # --- Gamification fields ---
+    # The current level of the user based on accumulated XP. Level 1
+    # corresponds to zero XP. Higher levels unlock cosmetic badges
+    # or additional community rings in the client UI. The level is
+    # recomputed whenever XP changes.
+    level: int = 1
+
+    # Timestamp of the last task completion. Used to compute streaks.
+    last_task_completion: Optional[datetime] = None
+
+    # Number of consecutive days the user has completed at least one task.
+    streak_days: int = 0
+
+    # A list of badge identifiers the user has earned. Badges are
+    # awarded by the coach or automatically by hitting milestones.
+    badges: List[str] = Field(default_factory=list)
+
 
 class Tenant(BaseModel):
     """A tenant represents a customer of the platform (e.g. ecomrocket.ai for
@@ -200,6 +217,29 @@ def get_user_progress(tenant: Tenant, user_id: str) -> UserProgress:
 
 
 # ---------------------------------------------------------------------------
+# Gamification helpers
+
+def calculate_level(xp: int) -> int:
+    """
+    Compute the user's level based on accumulated XP. This simple
+    implementation uses fixed thresholds: every 100 XP yields a new
+    level. Level 1 corresponds to 0–99 XP, level 2 to 100–199 XP, and
+    so on. Adjust the thresholds to tune progression speed. In a
+    production system you might load these thresholds from a config or
+    database to allow dynamic tuning.
+
+    Args:
+        xp: The total experience points the user has accumulated.
+
+    Returns:
+        The current level as an integer.
+    """
+    if xp < 0:
+        return 1
+    return 1 + xp // 100
+
+
+# ---------------------------------------------------------------------------
 # FastAPI app and endpoints
 
 app = FastAPI(title="Eazymode / Ecomrocket Coaching API")
@@ -237,6 +277,18 @@ class PurchaseSequenceRequest(BaseModel):
     """
 
     sequence_id: str
+
+
+class AwardBadgeRequest(BaseModel):
+    """
+    Request body for awarding a badge to a user. A badge is a
+    string identifier that will be appended to the user's list of
+    badges. In a gamified program you might define badges such as
+    "product_hunter", "supplier_whisperer" or use custom names. The
+    chat adapter can call this endpoint when the coach manually awards
+    a badge or when an automated milestone is reached.
+    """
+    badge: str
 
 
 @app.post("/tenant", summary="Create a new tenant")
@@ -318,6 +370,30 @@ def complete_task(tenant_id: str, user_id: str, req: CompleteTaskRequest):
     # Record completion and award XP
     progress.completed_tasks[task.id] = datetime.utcnow()
     progress.xp += task.xp
+    # Update streak and last_task_completion. A streak increases
+    # when the user completes at least one task per day without breaks.
+    now = datetime.utcnow()
+    # Determine if this is the first completion or part of an existing streak
+    if progress.last_task_completion is None:
+        progress.streak_days = 1
+    else:
+        # Compute difference in days between the last completion and now
+        last_date = progress.last_task_completion.date()
+        current_date = now.date()
+        delta_days = (current_date - last_date).days
+        if delta_days == 0:
+            # Completed multiple tasks on the same day; streak unchanged
+            pass
+        elif delta_days == 1:
+            # Consecutive day
+            progress.streak_days += 1
+        else:
+            # Gap detected; reset streak
+            progress.streak_days = 1
+    # Update last_task_completion timestamp
+    progress.last_task_completion = now
+    # Recalculate level based on new XP
+    progress.level = calculate_level(progress.xp)
     # Move to next sequence if all tasks completed and gate passed or no gate
     all_completed = all(
         t.id in progress.completed_tasks for t in sequence.tasks
@@ -428,6 +504,50 @@ def get_progress(tenant_id: str, user_id: str):
     tenant = get_tenant(tenant_id)
     progress = get_user_progress(tenant, user_id)
     return progress
+
+
+# ---------------------------------------------------------------------------
+# Gamification and stats endpoints
+
+@app.get(
+    "/tenant/{tenant_id}/user/{user_id}/stats",
+    summary="Get gamification stats for a user",
+)
+def get_stats(tenant_id: str, user_id: str):
+    """
+    Return the gamification statistics for a user. This includes
+    experience points, level, streak days and earned badges. Use this
+    endpoint to display progress bars, streak counters or badge
+    collections in your client UI.
+    """
+    tenant = get_tenant(tenant_id)
+    progress = get_user_progress(tenant, user_id)
+    return {
+        "xp": progress.xp,
+        "level": progress.level,
+        "streak_days": progress.streak_days,
+        "badges": progress.badges,
+    }
+
+
+@app.post(
+    "/tenant/{tenant_id}/user/{user_id}/badge",
+    summary="Award a badge to a user",
+)
+def award_badge(tenant_id: str, user_id: str, req: AwardBadgeRequest):
+    """
+    Append a badge identifier to the user's list of badges. Duplicate
+    badges are ignored. In a real system you might want to validate
+    that the badge exists in a catalog of known badges or enforce
+    badge awarding rules (e.g. cannot earn the same badge twice).
+    """
+    tenant = get_tenant(tenant_id)
+    progress = get_user_progress(tenant, user_id)
+    if req.badge not in progress.badges:
+        progress.badges.append(req.badge)
+    return {
+        "badges": progress.badges,
+    }
 
 
 @app.get(
