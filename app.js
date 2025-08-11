@@ -13,6 +13,8 @@ document.addEventListener('DOMContentLoaded', () => {
       alert('Enter a tenant ID first');
       return;
     }
+    // Fetch and apply tenant settings before loading brands.
+    loadSettings(tenant);
     // Call the enhanced brand loader
     if (typeof loadBrandsEnhanced === 'function') {
       loadBrandsEnhanced(tenant);
@@ -39,6 +41,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const msg = await resp.text();
         throw new Error(msg);
       }
+      // Reload theme in case creation triggers settings update (unlikely but safe)
+      loadSettings(tenant);
       if (typeof loadBrandsEnhanced === 'function') {
         await loadBrandsEnhanced(tenant);
       } else {
@@ -48,6 +52,50 @@ document.addEventListener('DOMContentLoaded', () => {
       alert('Error creating brand: ' + err.message);
     }
   });
+
+  /**
+   * Load tenant settings from the API and apply CSS variables and logo if provided.
+   * @param {string} tenantId
+   */
+  async function loadSettings(tenantId) {
+    try {
+      const resp = await fetch(`/tenant/${tenantId}/settings`);
+      if (!resp.ok) return;
+      const settings = await resp.json();
+      if (!settings) return;
+      // Apply color token as primary color if provided
+      if (settings.color_token) {
+        document.documentElement.style.setProperty('--primary-color', settings.color_token);
+      }
+      // Secondary color or copy tone not yet used; could be extended
+      if (settings.bg_color) {
+        document.documentElement.style.setProperty('--bg-color', settings.bg_color);
+      }
+      if (settings.border_color) {
+        document.documentElement.style.setProperty('--border-color', settings.border_color);
+      }
+      if (settings.text_color) {
+        document.documentElement.style.setProperty('--text-color', settings.text_color);
+      }
+      // Update logo if present
+      if (settings.logo_url) {
+        let logoEl = document.getElementById('tenantLogo');
+        if (!logoEl) {
+          logoEl = document.createElement('img');
+          logoEl.id = 'tenantLogo';
+          logoEl.alt = 'Tenant Logo';
+          logoEl.style.maxHeight = '40px';
+          const header = document.querySelector('h1');
+          if (header) {
+            header.parentNode.insertBefore(logoEl, header);
+          }
+        }
+        logoEl.src = settings.logo_url;
+      }
+    } catch (err) {
+      console.warn('Failed to load tenant settings', err);
+    }
+  }
 
   async function loadBrands(tenantId) {
     output.innerHTML = '<em>Loading brands...</em>';
@@ -189,6 +237,33 @@ document.addEventListener('DOMContentLoaded', () => {
       output.appendChild(brandDiv);
       loadBrandDetailsEnhanced(tenantId, brand.id, details);
     }
+
+    // Attempt to auto‑detect the tenant from the current domain. This
+    // helper calls the /whoami endpoint which returns a tenant_id
+    // inferred from the Host header. If found, it pre‑fills the
+    // tenant input box, loads the tenant settings and brands.
+    async function initAutoTenant() {
+      try {
+        const resp = await fetch('/whoami');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data && data.tenant_id) {
+          tenantInput.value = data.tenant_id;
+          // Apply settings and load brands automatically
+          await loadSettings(data.tenant_id);
+          if (typeof loadBrandsEnhanced === 'function') {
+            await loadBrandsEnhanced(data.tenant_id);
+          } else {
+            await loadBrands(data.tenant_id);
+          }
+        }
+      } catch (err) {
+        console.warn('Auto tenant detection failed', err);
+      }
+    }
+
+    // Kick off auto‑detection on initial load
+    initAutoTenant();
 
     /**
      * Enhanced brand details loader: shows schedule, phases, tasks and Add Task buttons.

@@ -43,7 +43,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -271,6 +271,15 @@ class BrandData(BaseModel):
 
 TENANTS: Dict[str, Tenant] = {}
 
+# A mapping from custom domain to tenant_id. When tenant settings include
+# a domain (e.g. 'ecomrocket.ai'), we register it here so that the
+# server can resolve the requesting tenant based on the Host header.
+# This map is populated when tenant settings are updated via the
+# POST /tenant/{tenant_id}/settings endpoint or when existing
+# tenants are bootstrapped manually. Domains are stored in
+# lower‑case for case‑insensitive matching.
+DOMAIN_TO_TENANT_ID: Dict[str, str] = {}
+
 # ---------------------------------------------------------------------------
 # Supabase initialization
 #
@@ -333,6 +342,27 @@ def sync_progress_to_db(progress: UserProgress, tenant_id: str) -> None:
     except Exception:
         # Ignore persistence errors in this scaffold
         pass
+
+# ---------------------------------------------------------------------------
+# Domain resolution helpers
+
+def resolve_tenant_by_domain(domain: str) -> Optional[str]:
+    """
+    Resolve a tenant identifier based on a custom domain. Domains are
+    matched case‑insensitively. If the domain is not registered,
+    returns ``None``.
+
+    Parameters
+    ----------
+    domain: str
+        The host name extracted from the HTTP Host header (without port).
+
+    Returns
+    -------
+    Optional[str]
+        The corresponding tenant_id or ``None`` if no match is found.
+    """
+    return DOMAIN_TO_TENANT_ID.get(domain.lower())
 
 # ---------------------------------------------------------------------------
 # Brand/Phase/Task helpers and schedule computation
@@ -1729,6 +1759,11 @@ def update_tenant_settings(tenant_id: str, req: TenantSettingsRequest):
     for field_name, value in req.dict().items():
         if value is not None:
             setattr(tenant.settings, field_name, value)
+    # Update domain mapping for host-based resolution
+    # If the request includes a domain, store a mapping to this tenant
+    if req.domain:
+        # Register domain for lowercase matching
+        DOMAIN_TO_TENANT_ID[req.domain.lower()] = tenant_id
     # Persist to Supabase
     if supabase:
         try:
@@ -1740,6 +1775,38 @@ def update_tenant_settings(tenant_id: str, req: TenantSettingsRequest):
         except Exception:
             pass
     return {"message": "Tenant settings updated"}
+
+
+# -----------------------------------------------------------------------
+# Host-based tenant resolution
+#
+# In a multi‑tenant deployment, the platform may serve different
+# educators or DTC brands on custom domains (e.g. ``ecomrocket.ai`` or
+# ``my.educator.com``). The ``/whoami`` endpoint allows clients to
+# discover which tenant they belong to based on the HTTP ``Host``
+# header. It returns the tenant identifier along with any persisted
+# settings. If no match is found, it returns an empty object. This
+# endpoint is especially useful for the frontend to auto‑select the
+# tenant ID when loading the dashboard.
+
+@app.get("/whoami", summary="Identify tenant by Host header")
+def whoami(request: Request):
+    """
+    Identify the current tenant based on the request's Host header.
+
+    The server looks up the host (minus any port) in the domain
+    mapping established when tenant settings were configured. If a
+    match is found, returns the tenant_id and the tenant's current
+    settings. Otherwise returns an empty object.
+    """
+    host = request.headers.get("host", "").split(":")[0].lower()
+    if not host:
+        return {}
+    tenant_id = resolve_tenant_by_domain(host)
+    if tenant_id:
+        tenant = get_tenant(tenant_id)
+        return {"tenant_id": tenant_id, "settings": tenant.settings or {}}
+    return {}
 
 
 if __name__ == "__main__":
