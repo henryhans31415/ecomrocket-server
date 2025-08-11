@@ -1978,7 +1978,12 @@ async def auto_setup(
     "/auto_create_brand",
     summary="Create a brand for a tenant via GET",
 )
-def auto_create_brand(tenant_id: str, name: str):
+def auto_create_brand(
+    tenant_id: str,
+    name: Optional[str] = None,
+    brand_name: Optional[str] = None,
+    request: Request = None,
+):
     """
     Quickly create a new brand within the specified tenant.
 
@@ -1987,20 +1992,35 @@ def auto_create_brand(tenant_id: str, name: str):
     calls the internal :func:`create_brand` helper to generate a brand
     record. The brand is stored in memory and returned as JSON.
 
+    The `name` query parameter is preferred. For environments where `name` may
+    not be forwarded correctly, the `brand_name` parameter can be used as
+    a fallback. If neither parameter is provided, the function will
+    attempt to extract `name` from the raw query parameters on the request.
+
     Parameters
     ----------
     tenant_id: str
         The identifier of the tenant returned by ``/auto_setup``.
-    name: str
+    name: str | None
         Friendly name for the brand (e.g. "Essencraft Launch").
+    brand_name: str | None
+        Alternative query parameter to specify the brand name.
 
     Returns
     -------
     dict
         A dictionary containing the newly created ``brand_id``.
     """
+    # resolve the brand name from provided parameters or raw query
+    resolved_name = name or brand_name
+    # if request provided, attempt to read from query params directly
+    if not resolved_name and request is not None:
+        qp = request.query_params
+        resolved_name = qp.get("name") or qp.get("brand_name")
+    if not resolved_name:
+        raise HTTPException(status_code=422, detail="Missing brand name")
     tenant = get_tenant(tenant_id)
-    brand = create_brand(tenant, name)
+    brand = create_brand(tenant, resolved_name)
     return {"brand_id": brand.id}
 
 
