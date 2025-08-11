@@ -44,6 +44,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
+import os
+from supabase import create_client, Client
 from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
@@ -174,6 +176,69 @@ class Tenant(BaseModel):
 # server restarts.
 
 TENANTS: Dict[str, Tenant] = {}
+
+# ---------------------------------------------------------------------------
+# Supabase initialization
+#
+# To persist user progress across restarts, we optionally write progress
+# records to a Supabase table named `user_progress`. The table schema is
+# defined in schema.sql. If the SUPABASE_URL and SUPABASE_ANON_KEY
+# environment variables are set, the server will initialize a Supabase
+# client and write progress updates to the database. Otherwise, all
+# persistence remains in memory. This allows the same codebase to run
+# locally without external dependencies while enabling cloud persistence
+# when deployed.
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+supabase: Optional[Client] = None
+if SUPABASE_URL and SUPABASE_ANON_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+    except Exception:
+        # If Supabase initialization fails, continue without persistence
+        supabase = None
+
+
+def sync_progress_to_db(progress: UserProgress, tenant_id: str) -> None:
+    """Persist a user's progress to the Supabase database.
+
+    This helper will upsert the progress row into the `user_progress`
+    table. It gracefully handles the case where Supabase is not
+    configured by doing nothing. The table schema must match the
+    dictionary keys below. If the upsert fails, the exception is
+    swallowed because persistence is best effort in this scaffold.
+
+    Parameters
+    ----------
+    progress: UserProgress
+        The progress object to persist.
+    tenant_id: str
+        The tenant identifier for multi‑tenant separation.
+    """
+    if not supabase:
+        return
+    # Prepare the row data. We flatten nested structures into JSON
+    # compatible types. datetime objects are converted to ISO strings.
+    row = {
+        "tenant_id": tenant_id,
+        "user_id": progress.user_id,
+        "program_id": progress.program_id,
+        "current_sequence_index": progress.current_sequence_index,
+        "current_task_index": len(progress.completed_tasks),
+        "xp": progress.xp,
+        "level": progress.level,
+        "streak_days": progress.streak_days,
+        "last_completed_at": progress.last_task_completion.isoformat() if progress.last_task_completion else None,
+        "badges": progress.badges,
+        "unlocked_sequences": progress.unlocked_sequences,
+        "mentorship_eligible": progress.mentorship_eligible,
+    }
+    try:
+        supabase.table("user_progress").upsert(row, on_conflict="user_id").execute()
+    except Exception:
+        # Ignore persistence errors in this scaffold
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +381,8 @@ def onboard_user(tenant_id: str, req: OnboardRequest):
     # Create progress record
     progress = UserProgress(user_id=req.user_id, program_id=req.program_id)
     tenant.users[req.user_id] = progress
+    # Persist progress to Supabase if configured
+    sync_progress_to_db(progress, tenant_id)
     return progress
 
 
@@ -402,7 +469,16 @@ def complete_task(tenant_id: str, user_id: str, req: CompleteTaskRequest):
         if sequence.gate is None:
             progress.current_sequence_index += 1
         # Else wait for gate evaluation via /gate endpoint
-    return progress
+    # Update the in‑memory store with the latest progress
+    tenant.users[user_id] = progress
+    # Persist progress to Supabase if configured
+    sync_progress_to_db(progress, tenant_id)
+    return {
+        "message": f"Task '{task.title}' completed",
+        "xp": progress.xp,
+        "level": progress.level,
+        "streak": progress.streak_days,
+    }
 
 
 @app.post(
