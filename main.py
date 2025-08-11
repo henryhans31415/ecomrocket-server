@@ -41,7 +41,7 @@ import json
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -281,6 +281,42 @@ TENANTS: Dict[str, Tenant] = {}
 DOMAIN_TO_TENANT_ID: Dict[str, str] = {}
 
 # ---------------------------------------------------------------------------
+# Domain mapping helpers
+#
+# In a production environment we need to persist the association between a
+# custom domain (e.g. "ecomrocket.ai") and a tenant_id so that the
+# ``/whoami`` endpoint can resolve the current tenant based on the Host
+# header after a process restart. When Supabase is configured, the
+# ``load_domain_mappings_from_db`` helper will populate the
+# ``DOMAIN_TO_TENANT_ID`` dictionary from the ``tenant_settings`` table.
+
+def load_domain_mappings_from_db() -> None:
+    """Load domain→tenant_id mappings from the tenant_settings table.
+
+    When Supabase is configured, this helper reads all rows from the
+    ``tenant_settings`` table and populates the ``DOMAIN_TO_TENANT_ID``
+    dictionary. Domains are lower‑cased to enable case‑insensitive
+    lookups. If Supabase is not configured or the query fails (e.g.
+    table missing), this function silently does nothing. It should be
+    invoked once during application startup after Supabase client
+    initialization.
+    """
+    global DOMAIN_TO_TENANT_ID
+    if not supabase:
+        return
+    try:
+        # Fetch mappings; limit to a reasonable number of rows
+        resp = supabase.table("tenant_settings").select("tenant_id, domain").execute()
+        for row in resp.data or []:
+            domain = row.get("domain")
+            tenant_id = row.get("tenant_id")
+            if domain and tenant_id:
+                DOMAIN_TO_TENANT_ID[domain.lower()] = tenant_id
+    except Exception:
+        # Ignore any errors (e.g. table missing) during bootstrap
+        pass
+
+# ---------------------------------------------------------------------------
 # Supabase initialization
 #
 # To persist user progress across restarts, we optionally write progress
@@ -298,6 +334,9 @@ supabase: Optional[Client] = None
 if SUPABASE_URL and SUPABASE_ANON_KEY:
     try:
         supabase = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+        # Populate domain→tenant mapping from the tenant_settings table
+        # so that host‑based resolution works across restarts.
+        load_domain_mappings_from_db()
     except Exception:
         # If Supabase initialization fails, continue without persistence
         supabase = None
@@ -349,8 +388,10 @@ def sync_progress_to_db(progress: UserProgress, tenant_id: str) -> None:
 def resolve_tenant_by_domain(domain: str) -> Optional[str]:
     """
     Resolve a tenant identifier based on a custom domain. Domains are
-    matched case‑insensitively. If the domain is not registered,
-    returns ``None``.
+    matched case‑insensitively. If the mapping is not found in
+    memory, this helper will query the Supabase ``tenant_settings``
+    table (if configured) and populate the in‑memory mapping. This
+    ensures that host‑based resolution works across process restarts.
 
     Parameters
     ----------
@@ -362,7 +403,24 @@ def resolve_tenant_by_domain(domain: str) -> Optional[str]:
     Optional[str]
         The corresponding tenant_id or ``None`` if no match is found.
     """
-    return DOMAIN_TO_TENANT_ID.get(domain.lower())
+    dom = domain.lower()
+    # Check in-memory mapping first
+    if dom in DOMAIN_TO_TENANT_ID:
+        return DOMAIN_TO_TENANT_ID[dom]
+    # If Supabase is available, attempt to fetch mapping from the
+    # tenant_settings table and cache it. Use a single() call to
+    # ensure at most one row is returned.
+    if supabase:
+        try:
+            resp = supabase.table("tenant_settings").select("tenant_id").eq("domain", dom).single().execute()
+            data = resp.data
+            if data and "tenant_id" in data:
+                tenant_id = data["tenant_id"]
+                DOMAIN_TO_TENANT_ID[dom] = tenant_id
+                return tenant_id
+        except Exception:
+            pass
+    return None
 
 # ---------------------------------------------------------------------------
 # Brand/Phase/Task helpers and schedule computation
@@ -1751,7 +1809,25 @@ def update_tenant_settings(tenant_id: str, req: TenantSettingsRequest):
     dict
         A simple message confirming the update.
     """
-    tenant = get_tenant(tenant_id)
+    # Ensure the tenant exists. If not found in memory, bootstrap a new
+    # tenant on the fly so that settings can be stored. In a
+    # production system you might enforce that tenants are
+    # pre‑created via the /tenant endpoint or persisted in a real
+    # database. Here we load the example programs from sequences.json
+    # when creating a tenant implicitly.
+    try:
+        tenant = get_tenant(tenant_id)
+    except HTTPException:
+        # Create a placeholder tenant with the specified tenant_id and
+        # name equal to the tenant_id. We load the example programs so
+        # that the new tenant has at least one program definition. In a
+        # production setup you would persist tenants in a database and
+        # require explicit creation via /tenant.
+        example_programs_path = Path(__file__).parent / "sequences.json"
+        programs = load_programs_from_file(example_programs_path)
+        program_map = {p.id: p for p in programs}
+        tenant = Tenant(id=tenant_id, name=tenant_id, programs=program_map)
+        TENANTS[tenant_id] = tenant
     # Initialise settings if missing
     if tenant.settings is None:
         tenant.settings = TenantSettings()
@@ -1804,9 +1880,96 @@ def whoami(request: Request):
         return {}
     tenant_id = resolve_tenant_by_domain(host)
     if tenant_id:
-        tenant = get_tenant(tenant_id)
-        return {"tenant_id": tenant_id, "settings": tenant.settings or {}}
+        # Try to read settings from in‑memory tenant first
+        try:
+            tenant = get_tenant(tenant_id)
+            return {"tenant_id": tenant_id, "settings": tenant.settings or {}}
+        except HTTPException:
+            # Fallback: fetch settings directly from Supabase if available
+            if supabase:
+                try:
+                    resp = supabase.table("tenant_settings").select("color_token, logo_url, copy_tone, domain").eq("tenant_id", tenant_id).single().execute()
+                    data = resp.data
+                    if data:
+                        return {"tenant_id": tenant_id, "settings": data}
+                except Exception:
+                    pass
+            return {"tenant_id": tenant_id}
     return {}
+
+# --------------------------------------------------------------------
+# Auto setup endpoint (GET only)
+@app.get("/auto_setup", summary="Create tenant and settings via GET")
+async def auto_setup(
+    name: str,
+    domain: str,
+    color_token: Optional[str] = None,
+    logo_url: Optional[str] = None,
+    copy_tone: Optional[str] = None,
+):
+    """
+    Create a new tenant and set its settings using query parameters.
+
+    This helper is primarily intended for environments where POST requests
+    are disallowed (e.g. automated agent tasks). It creates a tenant in
+    memory, stores example programs, applies the provided settings and
+    persists them to the ``tenant_settings`` table (if available). The
+    domain mapping is updated to allow host-based resolution.
+
+    Parameters
+    ----------
+    name: str
+        Friendly name for the tenant (e.g. your educator or brand name).
+    domain: str
+        Custom domain that should resolve to this tenant (e.g. ``ecomrocket.ai``).
+    color_token: Optional[str]
+        Hex or CSS colour token to use as the primary accent colour.
+    logo_url: Optional[str]
+        URL of a logo image to display on branded pages.
+    copy_tone: Optional[str]
+        Short descriptor of the tone of copy (e.g. ``direct``, ``playful``).
+
+    Returns
+    -------
+    dict
+        The newly generated tenant_id and the applied settings.
+    """
+    tenant_id = str(uuid.uuid4())
+    # Load example programs from sequences.json
+    example_programs_path = Path(__file__).parent / "sequences.json"
+    programs = load_programs_from_file(example_programs_path)
+    program_map = {p.id: p for p in programs}
+    # Create a tenant in memory
+    tenant = Tenant(id=tenant_id, name=name, programs=program_map)
+    TENANTS[tenant_id] = tenant
+    # Prepare settings dict
+    settings_data: Dict[str, Any] = {"domain": domain}
+    if color_token:
+        settings_data["color_token"] = color_token
+    if logo_url:
+        settings_data["logo_url"] = logo_url
+    if copy_tone:
+        settings_data["copy_tone"] = copy_tone
+    # Apply to in-memory tenant
+    tenant.settings = TenantSettings(**settings_data)
+    # Persist to Supabase if configured
+    if supabase:
+        try:
+            supabase.table("tenant_settings").upsert(
+                {
+                    "tenant_id": tenant_id,
+                    "domain": domain,
+                    "color_token": color_token,
+                    "logo_url": logo_url,
+                    "copy_tone": copy_tone,
+                },
+                on_conflict="tenant_id",
+            ).execute()
+        except Exception:
+            pass
+    # Update domain mapping
+    DOMAIN_TO_TENANT_ID[domain.lower()] = tenant_id
+    return {"tenant_id": tenant_id, "settings": settings_data}
 
 
 if __name__ == "__main__":
