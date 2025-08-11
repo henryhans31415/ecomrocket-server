@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Eazymode Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 1rem;
+      line-height: 1.5;
+    }
+    h1 {
+      margin-bottom: 1rem;
+    }
+    .controls {
+      margin-bottom: 1rem;
+    }
+    .brand {
+      border: 1px solid #eee;
+      padding: 1rem;
+      margin-bottom: 1rem;
+      border-radius: 4px;
+    }
+    .brand h2 {
+      margin-top: 0;
+      margin-bottom: 0.5rem;
+    }
+    .phase {
+      margin-left: 1rem;
+      border-left: 2px solid #ccc;
+      padding-left: 0.5rem;
+      margin-bottom: 0.5rem;
+    }
+    .task {
+      margin-left: 1.5rem;
+      list-style-type: disc;
+    }
+    #output pre {
+      background: #f9f9f9;
+      padding: 0.5rem;
+      border-radius: 4px;
+      overflow-x: auto;
+    }
+  </style>
+</head>
+<body>
+  <h1>Eazymode Owner Dashboard (Prototype)</h1>
+  <div class="controls">
+    <label for="tenantId">Tenant ID:</label>
+    <input id="tenantId" type="text" placeholder="tenant id" />
+    <button id="loadBrandsBtn">Load Brands</button>
+    <button id="createBrandBtn">Create Brand</button>
+  </div>
+  <div id="output"></div>
+  <script src="app.js"></script>
+</body>
+</html>
