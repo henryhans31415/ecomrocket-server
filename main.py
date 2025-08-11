@@ -218,6 +218,14 @@ class BrandData(BaseModel):
     logo_url: Optional[str] = None
     phases: Dict[str, PhaseData] = Field(default_factory=dict)
 
+    # A list of event objects for this brand. Each event captures a
+    # significant change (e.g. task completed, blocker recorded,
+    # schedule shift) along with a timestamp. In-memory events will
+    # reset on restart; to persist them set SUPABASE_URL and
+    # SUPABASE_ANON_KEY so that events are inserted into the
+    # ``events`` table in Supabase. See ``log_event`` helper below.
+    events: List[Dict] = Field(default_factory=list)
+
 
 # ---------------------------------------------------------------------------
 # In‑memory “database”
@@ -477,6 +485,46 @@ def calculate_schedule_for_brand(tenant: Tenant, brand_id: str):
         "critical_tasks": critical_tasks,
     }
 
+# ---------------------------------------------------------------------------
+# Event logging helper
+
+def log_event(tenant_id: str, brand: BrandData, event_type: str, payload: Dict) -> None:
+    """Record an event for a brand and persist it to Supabase if configured.
+
+    Events power the "Today’s pulse" feature in the dashboard. Each event
+    captures a timestamp and an arbitrary payload. In memory events are
+    appended to ``brand.events``; when Supabase is configured they are
+    inserted into the ``events`` table. Errors from Supabase are
+    swallowed because persistence is best effort in this scaffold.
+
+    Parameters
+    ----------
+    tenant_id : str
+        The tenant identifier.
+    brand : BrandData
+        The brand that the event relates to.
+    event_type : str
+        A short string describing the type of event, e.g. ``"task_completed"``.
+    payload : Dict
+        Additional details about the event. Should be JSON serializable.
+    """
+    event = {
+        "id": str(uuid.uuid4()),
+        "tenant_id": tenant_id,
+        "brand_id": brand.id,
+        "type": event_type,
+        "payload": payload,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    # Append to in-memory list
+    brand.events.append(event)
+    # Persist to Supabase if available
+    if supabase:
+        try:
+            supabase.table("events").insert(event).execute()
+        except Exception:
+            pass
+
 
 # ---------------------------------------------------------------------------
 # Utility functions
@@ -634,6 +682,43 @@ class AwardBadgeRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# What-if and chat ingestion request models
+
+class WhatIfModification(BaseModel):
+    """Represents a hypothetical change to a task's duration.
+
+    The ``task_id`` references a PhaseTaskData within a brand. The
+    ``duration_days`` field is the temporary duration to apply for
+    schedule computation. Use this model in the WhatIfRequest below.
+    """
+    task_id: str
+    duration_days: int
+
+
+class WhatIfRequest(BaseModel):
+    """Request payload for computing a what‑if schedule.
+
+    Provide a list of modifications to override task durations. The
+    endpoint will compute a new schedule using the modified durations
+    and return the resulting ETA and critical path. This does not
+    persist any changes; it is for interactive forecasting.
+    """
+    modifications: List[WhatIfModification]
+
+
+class ChatIngestRequest(BaseModel):
+    """Request payload for chat ingestion.
+
+    The assistant can call this endpoint with a free‑form message to
+    perform updates on brand tasks. The message can include simple
+    commands like ``delay <task_id> to <days>``. Only a few patterns
+    are supported in this scaffold. Extend the parser as needed.
+    """
+    brand_id: str
+    message: str
+
+
+# ---------------------------------------------------------------------------
 # Brand and phase creation request models
 
 class BrandCreateRequest(BaseModel):
@@ -782,6 +867,10 @@ def complete_task(tenant_id: str, user_id: str, req: CompleteTaskRequest):
     tenant.users[user_id] = progress
     # Persist progress to Supabase if configured
     sync_progress_to_db(progress, tenant_id)
+    # Log task completion event on the brand if we can resolve brand
+    # Determine the brand associated with the current program and sequence
+    # There is no direct mapping in this scaffold; events are not logged for
+    # program tasks by default. You can extend this to map sequences to brands.
     return {
         "message": f"Task '{task.title}' completed",
         "xp": progress.xp,
@@ -1047,6 +1136,8 @@ def create_brand_endpoint(tenant_id: str, req: BrandCreateRequest):
     """
     tenant = get_tenant(tenant_id)
     brand = create_brand(tenant, req.name, req.color_token, req.logo_url)
+    # Log event for brand creation
+    log_event(tenant_id, brand, "brand_created", {"name": req.name})
     return brand
 
 
@@ -1062,6 +1153,10 @@ def create_phase_endpoint(tenant_id: str, brand_id: str, req: PhaseCreateRequest
     """
     tenant = get_tenant(tenant_id)
     phase = create_phase(tenant, brand_id, req.key, req.name, req.order, req.weight)
+    # Log phase creation event
+    brand = tenant.brands.get(brand_id)
+    if brand:
+        log_event(tenant_id, brand, "phase_created", {"phase_id": phase.id, "key": req.key, "name": req.name})
     return phase
 
 
@@ -1094,6 +1189,16 @@ def create_phase_task_endpoint(
         req.weight,
         req.depends_on,
     )
+    # Log task creation event
+    brand = tenant.brands.get(brand_id)
+    if brand:
+        log_event(tenant_id, brand, "task_created", {
+            "phase_id": phase_id,
+            "task_id": task.id,
+            "name": task.name,
+            "duration_days": task.duration_days,
+            "depends_on": req.depends_on,
+        })
     return task
 
 
@@ -1127,6 +1232,144 @@ def get_schedule_endpoint(tenant_id: str, brand_id: str):
     """
     tenant = get_tenant(tenant_id)
     return calculate_schedule_for_brand(tenant, brand_id)
+
+
+# ---------------------------------------------------------------------------
+# Pulse, what-if and chat ingestion endpoints
+
+@app.get(
+    "/tenant/{tenant_id}/brand/{brand_id}/pulse",
+    summary="Get recent events (pulse) for a brand",
+)
+def get_pulse_endpoint(tenant_id: str, brand_id: str, since: Optional[str] = None):
+    """
+    Return a list of events for the specified brand. Events capture
+    significant changes (e.g. task created, phase completed, schedule
+    shifts) and are used by the owner dashboard to answer "What
+    changed since yesterday?". You can optionally provide a `since`
+    query parameter (ISO 8601 timestamp) to filter events created
+    after that time. If omitted, only events from the last 24 hours
+    are returned.
+
+    Parameters
+    ----------
+    since : str, optional
+        ISO 8601 formatted timestamp. Events created after this time
+        will be included. When omitted, events from the last 24 hours
+        are returned.
+    """
+    tenant = get_tenant(tenant_id)
+    brand = tenant.brands.get(brand_id)
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    events = brand.events
+    cutoff: Optional[datetime] = None
+    if since:
+        try:
+            cutoff = datetime.fromisoformat(since)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid since timestamp")
+    else:
+        cutoff = datetime.utcnow() - timedelta(days=1)
+    filtered = []
+    for e in events:
+        try:
+            ts = datetime.fromisoformat(e["created_at"])
+        except Exception:
+            continue
+        if cutoff is None or ts > cutoff:
+            filtered.append(e)
+    return filtered
+
+
+@app.post(
+    "/tenant/{tenant_id}/brand/{brand_id}/whatif",
+    summary="Compute a what‑if schedule for a brand",
+)
+def what_if_endpoint(tenant_id: str, brand_id: str, req: WhatIfRequest):
+    """
+    Perform a temporary schedule calculation using modified task durations.
+    The modifications do not persist; they are applied on a copy of the
+    brand data. This allows owners to explore scenarios like "what if
+    production slips 7 days" without altering the underlying plan.
+
+    The response mirrors the structure of the ``/schedule`` endpoint.
+    """
+    tenant = get_tenant(tenant_id)
+    brand = tenant.brands.get(brand_id)
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    # Clone brand and phases for temporary computation
+    import copy
+    tmp_brand = copy.deepcopy(brand)
+    # Apply modifications to temporary tasks
+    for mod in req.modifications:
+        for p in tmp_brand.phases.values():
+            if mod.task_id in p.tasks:
+                p.tasks[mod.task_id].duration_days = mod.duration_days
+    # Use existing schedule calculator on the cloned brand
+    # Build a dummy tenant to satisfy function signature
+    tmp_tenant = Tenant(id=tenant.id, name=tenant.name, programs=tenant.programs.copy(), users=tenant.users.copy())
+    tmp_tenant.brands = {brand_id: tmp_brand}
+    result = calculate_schedule_for_brand(tmp_tenant, brand_id)
+    return result
+
+
+@app.post(
+    "/tenant/{tenant_id}/chat/ingest",
+    summary="Process a chat message to update brand tasks",
+)
+def chat_ingest_endpoint(tenant_id: str, req: ChatIngestRequest):
+    """
+    Parse a free‑form chat message and apply simple updates to brand
+    tasks. This scaffold implements a minimal parser that handles
+    commands of the form ``delay <task_id> to <days>`` (adjust the
+    duration of a task) and ``complete <task_id>`` (mark a brand
+    task as done). Unknown commands are ignored. The parsed actions
+    update the in‑memory brand and log events. In a production system
+    you might integrate a natural language model to parse more
+    sophisticated intents and call other endpoints accordingly.
+    """
+    tenant = get_tenant(tenant_id)
+    brand = tenant.brands.get(req.brand_id)
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    msg = req.message.lower()
+    actions = []
+    words = msg.split()
+    # Simple pattern: delay <task_id> to <days>
+    if "delay" in words and "to" in words:
+        try:
+            idx_delay = words.index("delay")
+            idx_to = words.index("to")
+            task_id = words[idx_delay + 1]
+            days_str = words[idx_to + 1]
+            new_duration = int(days_str)
+            # Update task duration
+            for phase in brand.phases.values():
+                if task_id in phase.tasks:
+                    phase.tasks[task_id].duration_days = new_duration
+                    actions.append({"action": "delay", "task_id": task_id, "duration_days": new_duration})
+                    # Log event
+                    log_event(tenant_id, brand, "task_duration_changed", {"task_id": task_id, "duration_days": new_duration})
+                    break
+        except Exception:
+            pass
+    # Simple pattern: complete <task_id>
+    if "complete" in words:
+        try:
+            idx = words.index("complete")
+            task_id = words[idx + 1]
+            # Mark task as done
+            for phase in brand.phases.values():
+                if task_id in phase.tasks:
+                    phase.tasks[task_id].status = "done"
+                    actions.append({"action": "complete", "task_id": task_id})
+                    log_event(tenant_id, brand, "task_completed", {"task_id": task_id})
+                    break
+        except Exception:
+            pass
+    return {"applied_actions": actions}
 
 
 if __name__ == "__main__":
