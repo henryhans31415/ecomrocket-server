@@ -45,6 +45,8 @@ from typing import Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 import os
 from supabase import create_client, Client
 from pydantic import BaseModel, Field
@@ -606,6 +608,35 @@ def calculate_level(xp: int) -> int:
 # FastAPI app and endpoints
 
 app = FastAPI(title="Eazymode / Ecomrocket Coaching API")
+
+# -----------------------------------------------------------------------
+# Cross‑origin resource sharing (CORS) configuration and static dashboard
+#
+# To support a separate browser‑based dashboard (or any web client) that
+# consumes this API from a different domain, we enable permissive CORS.
+# In production you should restrict the allowed origins to your own domains
+# (e.g., https://ecomrocket.ai and https://eazymode.ai) to prevent abuse.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Serve static files for a basic dashboard.  Files placed in the
+# ``eazymode_server/frontend`` directory will be accessible under
+# ``/dashboard``.  For example, ``frontend/index.html`` becomes
+# ``/dashboard/index.html`` and is also served as the default document at
+# ``/dashboard/`` when the ``html=True`` flag is set.  This allows you to
+# include a lightweight HTML/JS dashboard within the same service without
+# deploying a separate static site.  The dashboard can call the API using
+# relative URLs (since CORS permits it).
+app.mount(
+    "/dashboard",
+    StaticFiles(directory=os.path.join(os.path.dirname(__file__), "frontend"), html=True),
+    name="dashboard",
+)
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 def root():
@@ -1188,6 +1219,35 @@ def create_brand_endpoint(tenant_id: str, req: BrandCreateRequest):
     # Log event for brand creation
     log_event(tenant_id, brand, "brand_created", {"name": req.name})
     return brand
+
+
+# ---------------------------------------------------------------------------
+# Brand listing endpoint
+
+@app.get(
+    "/tenant/{tenant_id}/brands",
+    summary="List all brands for a tenant",
+)
+def list_brands_endpoint(tenant_id: str):
+    """
+    Return a list of all brands created under the specified tenant.  This
+    endpoint is useful for the owner and team dashboards to populate a
+    portfolio of brands (e.g. Quiet Body, Essencraft, Veluci) for the
+    currently logged in tenant.  Each brand includes its ID, name and
+    optional color/branding properties.
+
+    Parameters
+    ----------
+    tenant_id : str
+        The identifier of the tenant whose brands should be listed.
+
+    Returns
+    -------
+    list[BrandData]
+        A list of brand objects.
+    """
+    tenant = get_tenant(tenant_id)
+    return list(tenant.brands.values())
 
 
 @app.post(
