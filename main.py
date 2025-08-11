@@ -156,6 +156,22 @@ class UserProgress(BaseModel):
     badges: List[str] = Field(default_factory=list)
 
 
+class TenantSettings(BaseModel):
+    """
+    Configuration settings for a tenant. These values control the
+    appearance and tone of the user interface for a given educator or
+    DTC client. Each tenant can specify a primary colour token, a
+    logo URL, a copy tone string and an optional custom domain. If a
+    tenant does not specify settings, the client should fall back to
+    sensible defaults. These settings are persisted in the
+    ``tenant_settings`` table when Supabase is configured.
+    """
+    color_token: Optional[str] = None
+    logo_url: Optional[str] = None
+    copy_tone: Optional[str] = None
+    domain: Optional[str] = None
+
+
 class Tenant(BaseModel):
     """A tenant represents a customer of the platform (e.g. ecomrocket.ai for
     the DTC use case or a B2B client using eazymode.ai). Each tenant has
@@ -171,6 +187,8 @@ class Tenant(BaseModel):
     # brands (e.g. Quiet Body, Essencraft). Each brand has its own set
     # of phases and tasks which feed the PhaseGlass and schedule views.
     brands: Dict[str, "BrandData"] = Field(default_factory=dict)
+    # Optional settings controlling the tenant's branding and theme.
+    settings: Optional[TenantSettings] = None
 
 
 class PhaseTaskData(BaseModel):
@@ -759,6 +777,21 @@ class AssetCreateRequest(BaseModel):
     url: str
     type: str
     tags: List[str] = Field(default_factory=list)
+
+
+class TenantSettingsRequest(BaseModel):
+    """
+    Request payload for setting or updating tenant configuration.
+
+    All fields are optional so that clients can update only the fields
+    they care about. When a field is omitted it is left unchanged on
+    the tenant's existing settings. If the tenant has no settings
+    object yet one will be created.
+    """
+    color_token: Optional[str] = None
+    logo_url: Optional[str] = None
+    copy_tone: Optional[str] = None
+    domain: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1642,6 +1675,71 @@ def list_assets(tenant_id: str, brand_id: str, phase_id: Optional[str] = None):
     if phase_id:
         assets = [a for a in assets if a.get("phase_id") == phase_id]
     return assets
+
+
+# -----------------------------------------------------------------------
+# Tenant settings endpoints
+#
+# These endpoints allow clients to read and update per‑tenant branding
+# configuration such as colour tokens, logos, copy tone and custom
+# domain. The GET endpoint returns the current settings or an empty
+# object if none exist. The POST endpoint accepts a partial update and
+# persists it in memory and in Supabase when configured.
+
+@app.get(
+    "/tenant/{tenant_id}/settings",
+    summary="Get tenant settings",
+)
+def get_tenant_settings(tenant_id: str):
+    """
+    Retrieve the current configuration settings for a tenant. If the
+    tenant has never set any settings, returns an empty object. Use
+    this endpoint to fetch branding information such as colour tokens,
+    logos and copy tone for theming the UI.
+    """
+    tenant = get_tenant(tenant_id)
+    return tenant.settings or {}
+
+
+@app.post(
+    "/tenant/{tenant_id}/settings",
+    summary="Update tenant settings",
+)
+def update_tenant_settings(tenant_id: str, req: TenantSettingsRequest):
+    """
+    Create or update the configuration settings for a tenant.
+
+    All fields on the request are optional. If a field is omitted it
+    remains unchanged on the existing settings. If the tenant has no
+    settings yet a new settings object will be created. When a
+    Supabase client is configured the updated settings row is upserted
+    into the ``tenant_settings`` table using ``tenant_id`` as the
+    conflict key.
+
+    Returns
+    -------
+    dict
+        A simple message confirming the update.
+    """
+    tenant = get_tenant(tenant_id)
+    # Initialise settings if missing
+    if tenant.settings is None:
+        tenant.settings = TenantSettings()
+    # Update only provided fields
+    for field_name, value in req.dict().items():
+        if value is not None:
+            setattr(tenant.settings, field_name, value)
+    # Persist to Supabase
+    if supabase:
+        try:
+            row = {"tenant_id": tenant_id}
+            for field_name, value in req.dict().items():
+                # include None values to clear fields
+                row[field_name] = value
+            supabase.table("tenant_settings").upsert(row, on_conflict="tenant_id").execute()
+        except Exception:
+            pass
+    return {"message": "Tenant settings updated"}
 
 
 if __name__ == "__main__":

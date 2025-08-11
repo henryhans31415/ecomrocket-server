@@ -128,3 +128,20 @@ CREATE TABLE IF NOT EXISTS assets (
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
 );
+
+-- -------------------------------------------------------------------------
+-- Tenant settings
+--
+-- The tenant_settings table stores per-tenant configuration such as branding
+-- colours, logos, copy tone and custom domain. Each tenant has at most
+-- one settings row identified by the tenant_id primary key. The API
+-- includes endpoints to read and update these settings. If a tenant has
+-- no settings row, the UI should fall back to sensible defaults.
+
+CREATE TABLE IF NOT EXISTS tenant_settings (
+    tenant_id UUID PRIMARY KEY,
+    color_token TEXT,
+    logo_url TEXT,
+    copy_tone TEXT,
+    domain TEXT
+);
