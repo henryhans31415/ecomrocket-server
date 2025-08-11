@@ -93,3 +93,38 @@ CREATE TABLE IF NOT EXISTS events (
     payload JSONB NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
 );
+
+-- Table to store inventory snapshots per brand/product (SKU).
+-- Each row represents a point‑in‑time view of available stock
+-- (on_hand), inbound purchase orders (inbound) and the computed
+-- days of cover for that stock. Multiple snapshots can be recorded
+-- over time; the latest snapshot defines the current StockVial level
+-- shown in the dashboard. See API endpoints for inserting and
+-- retrieving snapshots.
+CREATE TABLE IF NOT EXISTS inventory_snapshots (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL,
+    brand_id UUID NOT NULL,
+    sku TEXT NOT NULL,
+    on_hand INTEGER NOT NULL,
+    inbound INTEGER NOT NULL,
+    days_cover INTEGER,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+);
+
+-- Table to store design and operations assets. An asset can be a file
+-- (image, PDF, video) or an embed (e.g. a Figma frame). Assets are
+-- associated with a brand and optionally a phase. Tags allow
+-- categorization (e.g. "packaging", "listing", "PDP").
+CREATE TABLE IF NOT EXISTS assets (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL,
+    brand_id UUID NOT NULL,
+    phase_id UUID,
+    url TEXT NOT NULL,
+    type TEXT NOT NULL,
+    tags JSONB NOT NULL DEFAULT '[]',
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+);

@@ -218,6 +218,19 @@ class BrandData(BaseModel):
     logo_url: Optional[str] = None
     phases: Dict[str, PhaseData] = Field(default_factory=dict)
 
+    # A simple mapping of SKU → stock snapshot for the StockVials
+    # feature. Each entry holds on_hand, inbound and days_cover
+    # values. This in‑memory structure drives the StockVials gauges in
+    # the dashboard. Persistent snapshots are written to the
+    # ``inventory_snapshots`` table when Supabase is configured.
+    stock_vials: Dict[str, Dict[str, Optional[int]]] = Field(default_factory=dict)
+
+    # A collection of assets (files or embeds) associated with the
+    # brand. Keys are asset IDs and values store metadata such as
+    # phase_id, url, type and tags. These are used to power the
+    # Design Board. Persistent copies are written to the ``assets``
+    # table when Supabase is configured.
+    assets: Dict[str, Dict] = Field(default_factory=dict)
     # A list of event objects for this brand. Each event captures a
     # significant change (e.g. task completed, blocker recorded,
     # schedule shift) along with a timestamp. In-memory events will
@@ -679,6 +692,42 @@ class AwardBadgeRequest(BaseModel):
     a badge or when an automated milestone is reached.
     """
     badge: str
+
+# ---------------------------------------------------------------------------
+# Inventory and asset request models
+
+class StockSnapshotRequest(BaseModel):
+    """Request payload for updating a stock snapshot.
+
+    Each snapshot specifies the SKU, units on hand, inbound purchase
+    order quantity and optionally a days of cover estimate. The
+    endpoint updates the in‑memory StockVials for the brand and
+    persists a record to the ``inventory_snapshots`` table when
+    Supabase is configured. The "days_cover" field indicates how many
+    days the on_hand inventory will last at current burn; it can be
+    omitted.
+    """
+    sku: str
+    on_hand: int
+    inbound: int
+    days_cover: Optional[int] = None
+
+
+class AssetCreateRequest(BaseModel):
+    """Request payload for creating a design/ops asset.
+
+    Assets include images, PDFs, videos or external embeds. Each
+    asset belongs to a brand and may optionally be tied to a phase.
+    The ``url`` field should point to a publicly accessible location
+    (e.g. Supabase Storage or Figma). ``type`` is a short string
+    describing the file type (e.g. "image", "pdf", "video",
+    "figma"). Tags can be used to categorise assets and support
+    filtering on the front‑end.
+    """
+    phase_id: Optional[str] = None
+    url: str
+    type: str
+    tags: List[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1370,6 +1419,169 @@ def chat_ingest_endpoint(tenant_id: str, req: ChatIngestRequest):
         except Exception:
             pass
     return {"applied_actions": actions}
+
+# ---------------------------------------------------------------------------
+# Stock and asset endpoints
+
+@app.post(
+    "/tenant/{tenant_id}/brand/{brand_id}/stock",
+    summary="Update stock snapshot for a SKU",
+)
+def update_stock_snapshot(tenant_id: str, brand_id: str, req: StockSnapshotRequest):
+    """
+    Update or insert a stock snapshot for a specific SKU within a brand.
+
+    This endpoint updates the in‑memory stock_vials map on the brand
+    and, when Supabase is configured, inserts a new row into the
+    ``inventory_snapshots`` table. The snapshot records on_hand and
+    inbound units as well as an optional days_of_cover metric. An
+    event of type ``stock_updated`` is logged with the payload
+    containing the snapshot details. Returns the updated stock entry.
+    """
+    tenant = get_tenant(tenant_id)
+    brand = tenant.brands.get(brand_id)
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    # Update in‑memory representation
+    brand.stock_vials[req.sku] = {
+        "sku": req.sku,
+        "on_hand": req.on_hand,
+        "inbound": req.inbound,
+        "days_cover": req.days_cover,
+    }
+    # Persist snapshot to Supabase
+    if supabase:
+        row = {
+            "tenant_id": tenant_id,
+            "brand_id": brand_id,
+            "sku": req.sku,
+            "on_hand": req.on_hand,
+            "inbound": req.inbound,
+            "days_cover": req.days_cover,
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        try:
+            supabase.table("inventory_snapshots").insert(row).execute()
+        except Exception:
+            pass
+    # Log event
+    log_event(
+        tenant_id,
+        brand,
+        "stock_updated",
+        {
+            "sku": req.sku,
+            "on_hand": req.on_hand,
+            "inbound": req.inbound,
+            "days_cover": req.days_cover,
+        },
+    )
+    return brand.stock_vials[req.sku]
+
+
+@app.get(
+    "/tenant/{tenant_id}/brand/{brand_id}/stockvials",
+    summary="Retrieve stock vials for a brand",
+)
+def get_stock_vials(tenant_id: str, brand_id: str):
+    """
+    Return the current stock vials for the specified brand. Each vial
+    represents a product SKU with on_hand, inbound and days_cover
+    metrics. Use this endpoint to power the StockVials row in the
+    owner dashboard. If no stock has been recorded the list will be
+    empty.
+    """
+    tenant = get_tenant(tenant_id)
+    brand = tenant.brands.get(brand_id)
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    return list(brand.stock_vials.values())
+
+
+@app.post(
+    "/tenant/{tenant_id}/brand/{brand_id}/asset",
+    summary="Add a design/ops asset to a brand",
+)
+def add_asset(tenant_id: str, brand_id: str, req: AssetCreateRequest):
+    """
+    Create a new asset entry for a brand. Assets are files or embeds
+    (images, PDFs, videos, Figma frames) that belong to a brand and
+    optionally to a phase. The asset is stored in the brand's
+    in‑memory ``assets`` map and, when Supabase is configured, is
+    persisted to the ``assets`` table. The server logs an event of
+    type ``asset_added`` with the asset payload.
+
+    Returns the created asset metadata including the generated asset ID.
+    """
+    tenant = get_tenant(tenant_id)
+    brand = tenant.brands.get(brand_id)
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    asset_id = str(uuid.uuid4())
+    asset = {
+        "id": asset_id,
+        "phase_id": req.phase_id,
+        "url": req.url,
+        "type": req.type,
+        "tags": req.tags,
+    }
+    brand.assets[asset_id] = asset
+    # Persist to Supabase
+    if supabase:
+        row = {
+            "tenant_id": tenant_id,
+            "brand_id": brand_id,
+            "phase_id": req.phase_id,
+            "url": req.url,
+            "type": req.type,
+            "tags": req.tags,
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        try:
+            supabase.table("assets").insert(row).execute()
+        except Exception:
+            pass
+    # Log event
+    log_event(
+        tenant_id,
+        brand,
+        "asset_added",
+        {
+            "asset_id": asset_id,
+            "phase_id": req.phase_id,
+            "url": req.url,
+            "type": req.type,
+            "tags": req.tags,
+        },
+    )
+    return asset
+
+
+@app.get(
+    "/tenant/{tenant_id}/brand/{brand_id}/assets",
+    summary="List assets for a brand",
+)
+def list_assets(tenant_id: str, brand_id: str, phase_id: Optional[str] = None):
+    """
+    Retrieve all assets for a brand. You can optionally pass
+    ``phase_id`` as a query parameter to filter assets belonging to a
+    specific phase. The returned list contains asset metadata such as
+    id, phase_id, url, type and tags. Assets are stored in the
+    in‑memory ``BrandData.assets`` map; when Supabase is configured
+    assets are also persisted to the ``assets`` table but this endpoint
+    reads from memory. In the future you could extend this to
+    query Supabase directly.
+    """
+    tenant = get_tenant(tenant_id)
+    brand = tenant.brands.get(brand_id)
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    assets = list(brand.assets.values())
+    if phase_id:
+        assets = [a for a in assets if a.get("phase_id") == phase_id]
+    return assets
 
 
 if __name__ == "__main__":
