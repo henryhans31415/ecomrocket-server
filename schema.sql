@@ -33,3 +33,63 @@ CREATE TABLE IF NOT EXISTS user_progress (
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
 );
+
+-- Table to store brands. Each brand belongs to a tenant and can be
+-- displayed separately in the dashboard. A brand corresponds to a
+-- product or business launch.
+CREATE TABLE IF NOT EXISTS brands (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL,
+    name TEXT NOT NULL,
+    color_token TEXT,
+    logo_url TEXT,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+);
+
+-- Table to store phases within a brand. Phases are ordered via
+-- phase_order and grouped under a brand. The key field is used as
+-- a short identifier (e.g. "company_setup").
+CREATE TABLE IF NOT EXISTS phases (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL,
+    brand_id UUID NOT NULL,
+    key TEXT NOT NULL,
+    name TEXT NOT NULL,
+    phase_order INTEGER NOT NULL,
+    weight INTEGER NOT NULL DEFAULT 1,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    CONSTRAINT unique_phase_key_per_brand UNIQUE (brand_id, key)
+);
+
+-- Table to store tasks within a phase. Tasks can depend on other
+-- tasks (depicted via the JSON array depends_on) and have an
+-- optional duration to drive schedule calculations.
+CREATE TABLE IF NOT EXISTS phase_tasks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL,
+    brand_id UUID NOT NULL,
+    phase_id UUID NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    duration_days INTEGER,
+    weight INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'todo',
+    depends_on JSONB NOT NULL DEFAULT '[]',
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    CONSTRAINT unique_task_name_per_phase UNIQUE (phase_id, name)
+);
+
+-- Event log table to capture significant changes (e.g. task completion,
+-- blockers, schedule shifts) for "today's pulse" digests. Payload
+-- stores details as JSON.
+CREATE TABLE IF NOT EXISTS events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL,
+    brand_id UUID NOT NULL,
+    type TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+);

@@ -165,6 +165,58 @@ class Tenant(BaseModel):
     name: str
     programs: Dict[str, ProgramDefinition] = Field(default_factory=dict)
     users: Dict[str, UserProgress] = Field(default_factory=dict)
+    # A mapping of brand_id to BrandData. A tenant may manage multiple
+    # brands (e.g. Quiet Body, Essencraft). Each brand has its own set
+    # of phases and tasks which feed the PhaseGlass and schedule views.
+    brands: Dict[str, "BrandData"] = Field(default_factory=dict)
+
+
+class PhaseTaskData(BaseModel):
+    """Represents a single task within a phase for the brand dashboard.
+
+    Each task belongs to a phase and may depend on other tasks across
+    phases. A duration (in days) can be specified to allow schedule
+    computations. The status field tracks whether the task is still
+    pending (`"todo"`), in progress, or completed (`"done"`).
+    """
+    id: str
+    name: str
+    description: Optional[str] = None
+    duration_days: Optional[int] = None
+    weight: int = 1
+    status: str = "todo"
+    depends_on: List[str] = Field(default_factory=list)
+
+
+class PhaseData(BaseModel):
+    """A collection of tasks grouped under a phase (e.g. Company Setup).
+
+    The key field is a short identifier (e.g. `company_setup`) used in
+    dependency definitions. Order determines the display order in the
+    PhaseGlass. Weight allows some phases to contribute more to the
+    overall launch readiness than others.
+    """
+    id: str
+    key: str
+    name: str
+    order: int
+    weight: int = 1
+    tasks: Dict[str, PhaseTaskData] = Field(default_factory=dict)
+
+
+class BrandData(BaseModel):
+    """A brand represents a product/business launch under a tenant.
+
+    Brands allow the owner to manage multiple launches in parallel.
+    Each brand has phases and tasks that roll up into completion
+    metrics and schedules. A color token and logo URL can be stored
+    here for client customization.
+    """
+    id: str
+    name: str
+    color_token: Optional[str] = None
+    logo_url: Optional[str] = None
+    phases: Dict[str, PhaseData] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +292,190 @@ def sync_progress_to_db(progress: UserProgress, tenant_id: str) -> None:
     except Exception:
         # Ignore persistence errors in this scaffold
         pass
+
+# ---------------------------------------------------------------------------
+# Brand/Phase/Task helpers and schedule computation
+
+def create_brand(tenant: Tenant, name: str, color_token: Optional[str] = None, logo_url: Optional[str] = None) -> BrandData:
+    """
+    Create a new brand within a tenant. Generates a UUID for the brand.
+    """
+    brand_id = str(uuid.uuid4())
+    brand = BrandData(id=brand_id, name=name, color_token=color_token, logo_url=logo_url)
+    tenant.brands[brand_id] = brand
+    return brand
+
+
+def create_phase(tenant: Tenant, brand_id: str, key: str, name: str, order: int, weight: int = 1) -> PhaseData:
+    """
+    Create a new phase within a brand. Phase keys must be unique per brand.
+    """
+    brand = tenant.brands.get(brand_id)
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    # Ensure unique key
+    if any(p.key == key for p in brand.phases.values()):
+        raise HTTPException(status_code=400, detail="Phase key already exists for this brand")
+    phase_id = str(uuid.uuid4())
+    phase = PhaseData(id=phase_id, key=key, name=name, order=order, weight=weight)
+    brand.phases[phase_id] = phase
+    return phase
+
+
+def create_phase_task(
+    tenant: Tenant,
+    brand_id: str,
+    phase_id: str,
+    name: str,
+    description: Optional[str] = None,
+    duration_days: Optional[int] = None,
+    weight: int = 1,
+    depends_on: Optional[List[str]] = None,
+) -> PhaseTaskData:
+    """
+    Create a new task within a phase. Task names must be unique within the phase.
+    """
+    brand = tenant.brands.get(brand_id)
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    phase = brand.phases.get(phase_id)
+    if not phase:
+        raise HTTPException(status_code=404, detail="Phase not found")
+    if any(t.name == name for t in phase.tasks.values()):
+        raise HTTPException(status_code=400, detail="Task name already exists in this phase")
+    task_id = str(uuid.uuid4())
+    task = PhaseTaskData(
+        id=task_id,
+        name=name,
+        description=description,
+        duration_days=duration_days,
+        weight=weight,
+        status="todo",
+        depends_on=depends_on or [],
+    )
+    phase.tasks[task_id] = task
+    return task
+
+
+def calculate_phase_progress(phase: PhaseData) -> float:
+    """
+    Compute the completion percentage for a phase based on task weights.
+    Returns a float between 0 and 1. If the phase has no tasks, returns 0.
+    """
+    if not phase.tasks:
+        return 0.0
+    total_weight = sum(t.weight for t in phase.tasks.values())
+    completed_weight = sum(t.weight for t in phase.tasks.values() if t.status == "done")
+    return completed_weight / total_weight if total_weight > 0 else 0.0
+
+
+def get_phaseglass_for_brand(tenant: Tenant, brand_id: str):
+    """
+    Compute PhaseGlass metrics for each phase in the brand.
+    Returns a list of dicts with phase details, completion percentage, and blockers.
+    A blocker is reported when a task has unmet dependencies.
+    """
+    brand = tenant.brands.get(brand_id)
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    phaseglass = []
+    for phase in sorted(brand.phases.values(), key=lambda p: p.order):
+        # Determine blockers: tasks with dependencies not completed
+        blockers = []
+        for task in phase.tasks.values():
+            # If any dependency is not done, and this task is not done, it's a blocker
+            if task.status != "done":
+                unmet = False
+                for dep in task.depends_on:
+                    # Look up dependency across all phases of the brand
+                    # If dependency not found or not done, it's unmet
+                    found = False
+                    for p in brand.phases.values():
+                        if dep in p.tasks:
+                            found = True
+                            if p.tasks[dep].status != "done":
+                                unmet = True
+                            break
+                    if not found:
+                        unmet = True
+                    if unmet:
+                        blockers.append({"task_id": task.id, "task_name": task.name, "dependency": dep})
+                        break
+        completion = calculate_phase_progress(phase)
+        phaseglass.append({
+            "phase_id": phase.id,
+            "key": phase.key,
+            "name": phase.name,
+            "order": phase.order,
+            "weight": phase.weight,
+            "completion": completion,
+            "blockers": blockers,
+        })
+    return phaseglass
+
+
+def calculate_schedule_for_brand(tenant: Tenant, brand_id: str):
+    """
+    Calculate a simple schedule for the brand using task durations and dependencies.
+    Returns an ETA object with total days, a confidence band (±20%), and critical path tasks.
+    A completed task (status == 'done') has zero remaining duration.
+    """
+    brand = tenant.brands.get(brand_id)
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    # Build a mapping of task_id to task object and adjacency for dependencies
+    tasks = {}
+    for phase in brand.phases.values():
+        for task in phase.tasks.values():
+            tasks[task.id] = task
+    # Compute earliest start/finish times using DFS (topological order). We assume no cycles.
+    start_times = {tid: 0 for tid in tasks.keys()}
+    finish_times = {tid: 0 for tid in tasks.keys()}
+    # We'll compute finish times by dynamic programming.
+    # Define a recursive function to compute finish time for task.
+    def compute_finish(tid: str):
+        task = tasks[tid]
+        # Completed tasks contribute zero time
+        duration = task.duration_days or 0
+        if task.status == "done":
+            duration = 0
+        if finish_times[tid] > 0:
+            # already computed (memoization)
+            return finish_times[tid]
+        if not task.depends_on:
+            start_times[tid] = 0
+            finish_times[tid] = duration
+            return finish_times[tid]
+        # compute start as max finish of deps
+        max_finish = 0
+        for dep in task.depends_on:
+            if dep in tasks:
+                dep_finish = compute_finish(dep)
+                if dep_finish > max_finish:
+                    max_finish = dep_finish
+            else:
+                # unknown dep, treat as zero (or could block schedule)
+                pass
+        start_times[tid] = max_finish
+        finish_times[tid] = max_finish + duration
+        return finish_times[tid]
+    # Compute for all tasks
+    for tid in tasks.keys():
+        compute_finish(tid)
+    # Total schedule is max finish time of all tasks not done
+    total_days = max(finish_times.values()) if finish_times else 0
+    # Determine critical path tasks: tasks whose finish time equals total_days
+    critical_tasks = []
+    for tid, finish in finish_times.items():
+        if finish == total_days and tasks[tid].status != "done":
+            critical_tasks.append({"task_id": tid, "task_name": tasks[tid].name})
+    # Confidence band ±20%
+    confidence = int(max(total_days * 0.2, 1)) if total_days > 0 else 0
+    return {
+        "total_days": total_days,
+        "eta": f"{total_days}d ± {confidence}d",  # e.g. "90d ± 18d"
+        "critical_tasks": critical_tasks,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +631,38 @@ class AwardBadgeRequest(BaseModel):
     a badge or when an automated milestone is reached.
     """
     badge: str
+
+
+# ---------------------------------------------------------------------------
+# Brand and phase creation request models
+
+class BrandCreateRequest(BaseModel):
+    """Request payload for creating a new brand.
+
+    A brand encapsulates a single product or business launch. The
+    optional `color_token` and `logo_url` fields allow the front‑end
+    application to theme the dashboard per brand.
+    """
+    name: str
+    color_token: Optional[str] = None
+    logo_url: Optional[str] = None
+
+
+class PhaseCreateRequest(BaseModel):
+    """Request payload for creating a new phase within a brand."""
+    key: str
+    name: str
+    order: int
+    weight: int = 1
+
+
+class PhaseTaskCreateRequest(BaseModel):
+    """Request payload for creating a task within a phase."""
+    name: str
+    description: Optional[str] = None
+    duration_days: Optional[int] = None
+    weight: int = 1
+    depends_on: List[str] = Field(default_factory=list)
 
 
 @app.post("/tenant", summary="Create a new tenant")
@@ -761,6 +1029,104 @@ def add_task(
         raise HTTPException(status_code=400, detail="Task ID already exists in sequence")
     sequence.tasks.append(task)
     return task
+
+
+# ---------------------------------------------------------------------------
+# Brand/Phase/Task endpoints and phaseglass/schedule endpoints
+
+
+@app.post(
+    "/tenant/{tenant_id}/brand",
+    summary="Create a new brand for a tenant",
+)
+def create_brand_endpoint(tenant_id: str, req: BrandCreateRequest):
+    """
+    Create a brand under a tenant. The request body must include at
+    least a name. A UUID will be generated for the brand. The new
+    brand is returned with its generated ID.
+    """
+    tenant = get_tenant(tenant_id)
+    brand = create_brand(tenant, req.name, req.color_token, req.logo_url)
+    return brand
+
+
+@app.post(
+    "/tenant/{tenant_id}/brand/{brand_id}/phase",
+    summary="Create a new phase within a brand",
+)
+def create_phase_endpoint(tenant_id: str, brand_id: str, req: PhaseCreateRequest):
+    """
+    Create a phase within an existing brand. The `key` field must be
+    unique within the brand. The `order` field determines the display
+    order of phases in the dashboard.
+    """
+    tenant = get_tenant(tenant_id)
+    phase = create_phase(tenant, brand_id, req.key, req.name, req.order, req.weight)
+    return phase
+
+
+@app.post(
+    "/tenant/{tenant_id}/brand/{brand_id}/phase/{phase_id}/task",
+    summary="Create a new task within a phase",
+)
+def create_phase_task_endpoint(
+    tenant_id: str,
+    brand_id: str,
+    phase_id: str,
+    req: PhaseTaskCreateRequest,
+):
+    """
+    Append a task to a phase. Task names must be unique within the
+    phase. The optional `duration_days` field allows schedule
+    computations. Dependencies should reference existing task IDs
+    (across any phase in the brand). If a dependency is unknown the
+    task is still created but will always remain blocked until the
+    dependency is added and completed.
+    """
+    tenant = get_tenant(tenant_id)
+    task = create_phase_task(
+        tenant,
+        brand_id,
+        phase_id,
+        req.name,
+        req.description,
+        req.duration_days,
+        req.weight,
+        req.depends_on,
+    )
+    return task
+
+
+@app.get(
+    "/tenant/{tenant_id}/brand/{brand_id}/phaseglass",
+    summary="Get PhaseGlass metrics for a brand",
+)
+def get_phaseglass_endpoint(tenant_id: str, brand_id: str):
+    """
+    Compute completion percentages and blockers for each phase in the
+    given brand. The response is a list of phase objects containing
+    completion (0–1) and blockers. This endpoint powers the PhaseGlass
+    view in the owner dashboard.
+    """
+    tenant = get_tenant(tenant_id)
+    return get_phaseglass_for_brand(tenant, brand_id)
+
+
+@app.get(
+    "/tenant/{tenant_id}/brand/{brand_id}/schedule",
+    summary="Get schedule and ETA for a brand",
+)
+def get_schedule_endpoint(tenant_id: str, brand_id: str):
+    """
+    Calculate the schedule, ETA and critical path tasks for the
+    specified brand. The schedule engine uses task durations and
+    dependencies to compute an overall time‑to‑launch. Completed tasks
+    contribute zero remaining time. The ETA is returned as a string
+    with a ±20% confidence band. Critical tasks list the tasks on
+    the longest path.
+    """
+    tenant = get_tenant(tenant_id)
+    return calculate_schedule_for_brand(tenant, brand_id)
 
 
 if __name__ == "__main__":
