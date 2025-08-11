@@ -1971,6 +1971,166 @@ async def auto_setup(
     DOMAIN_TO_TENANT_ID[domain.lower()] = tenant_id
     return {"tenant_id": tenant_id, "settings": settings_data}
 
+# --------------------------------------------------------------------
+# Additional auto-setup helpers for brand/program seeding
+
+@app.get(
+    "/auto_create_brand",
+    summary="Create a brand for a tenant via GET",
+)
+def auto_create_brand(tenant_id: str, name: str):
+    """
+    Quickly create a new brand within the specified tenant.
+
+    This helper allows automated agent tasks to provision a brand without
+    issuing a POST request. It looks up the tenant in memory and then
+    calls the internal :func:`create_brand` helper to generate a brand
+    record. The brand is stored in memory and returned as JSON.
+
+    Parameters
+    ----------
+    tenant_id: str
+        The identifier of the tenant returned by ``/auto_setup``.
+    name: str
+        Friendly name for the brand (e.g. "Essencraft Launch").
+
+    Returns
+    -------
+    dict
+        A dictionary containing the newly created ``brand_id``.
+    """
+    tenant = get_tenant(tenant_id)
+    brand = create_brand(tenant, name)
+    return {"brand_id": brand.id}
+
+
+@app.get(
+    "/auto_seed_amazon_fba",
+    summary="Seed the Amazon FBA launch template via GET",
+)
+def auto_seed_amazon_fba(tenant_id: str, brand_id: str):
+    """
+    Populate a brand with the default Amazon FBA launch program.
+
+    This endpoint creates a set of phases and tasks that mirror a
+    typical FBA launch workflow. The structure is inspired by the
+    sequence used in the course: Company Setup, Supply Chain, Brand
+    & Creative, E‑com Setup, Pre‑Launch, Launch and Post‑Launch.
+
+    Parameters
+    ----------
+    tenant_id: str
+        The tenant identifier returned by ``/auto_setup``.
+    brand_id: str
+        The brand identifier returned by ``/auto_create_brand``.
+
+    Returns
+    -------
+    dict
+        A summary with the number of phases and tasks created.
+    """
+    tenant = get_tenant(tenant_id)
+    brand = tenant.brands.get(brand_id)
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    # Define the FBA template. Each phase has a weight (fraction of 1)
+    # and a list of tasks with their own weight, duration (days) and
+    # dependency names. We use simple strings for dependencies; the
+    # schedule engine will resolve them by name.
+    template = [
+        {
+            "phase": "Company Setup",
+            "weight": 0.15,
+            "tasks": [
+                {"name": "Register LLC/EIN", "w": 0.5, "d": 30, "dep": []},
+                {"name": "Open business bank", "w": 0.3, "d": 10, "dep": ["Register LLC/EIN"]},
+                {"name": "Create Amazon Seller Central", "w": 0.2, "d": 3, "dep": ["Open business bank"]},
+            ],
+        },
+        {
+            "phase": "Supply Chain",
+            "weight": 0.30,
+            "tasks": [
+                {"name": "Supplier shortlist (3 vendors)", "w": 0.15, "d": 7, "dep": []},
+                {"name": "Samples ordered/approved", "w": 0.25, "d": 14, "dep": ["Supplier shortlist (3 vendors)"]},
+                {"name": "Place PO (qty)", "w": 0.10, "d": 3, "dep": ["Samples ordered/approved"]},
+                {"name": "Production", "w": 0.30, "d": 28, "dep": ["Place PO (qty)"]},
+                {"name": "Freight + customs", "w": 0.15, "d": 25, "dep": ["Production"]},
+                {"name": "3PL inbound/booked", "w": 0.05, "d": 5, "dep": ["Freight + customs"]},
+            ],
+        },
+        {
+            "phase": "Brand/Creative",
+            "weight": 0.20,
+            "tasks": [
+                {"name": "Brand name & positioning", "w": 0.15, "d": 3, "dep": []},
+                {"name": "Logo + color system", "w": 0.15, "d": 3, "dep": ["Brand name & positioning"]},
+                {"name": "Packaging dieline + copy", "w": 0.25, "d": 5, "dep": ["Logo + color system"]},
+                {"name": "Photography / 3D renders", "w": 0.30, "d": 5, "dep": ["Packaging dieline + copy"]},
+                {"name": "A+ copy draft", "w": 0.15, "d": 3, "dep": ["Brand name & positioning"]},
+            ],
+        },
+        {
+            "phase": "E‑com Setup",
+            "weight": 0.20,
+            "tasks": [
+                {"name": "Keyword research", "w": 0.15, "d": 2, "dep": []},
+                {"name": "Listing title/bullets/description", "w": 0.35, "d": 3, "dep": ["Keyword research", "Photography / 3D renders"]},
+                {"name": "A+ modules", "w": 0.20, "d": 2, "dep": ["Photography / 3D renders", "A+ copy draft"]},
+                {"name": "Storefront + brand registry", "w": 0.15, "d": 5, "dep": ["Logo + color system"]},
+                {"name": "PPC campaign scaffold", "w": 0.15, "d": 2, "dep": ["Keyword research"]},
+            ],
+        },
+        {
+            "phase": "Pre‑Launch",
+            "weight": 0.10,
+            "tasks": [
+                {"name": "Inventory available at FC", "w": 0.5, "d": 0, "dep": ["3PL inbound/booked"]},
+                {"name": "Reviews & seeding plan", "w": 0.3, "d": 2, "dep": ["PPC campaign scaffold"]},
+                {"name": "Launch checklist sign‑off", "w": 0.2, "d": 1, "dep": ["Inventory available at FC", "A+ modules"]},
+            ],
+        },
+        {
+            "phase": "Launch",
+            "weight": 0.03,
+            "tasks": [
+                {"name": "Go live", "w": 1.0, "d": 0, "dep": ["Launch checklist sign‑off"]},
+            ],
+        },
+        {
+            "phase": "Post‑Launch",
+            "weight": 0.02,
+            "tasks": [
+                {"name": "Day 7 cohort review", "w": 0.5, "d": 7, "dep": ["Go live"]},
+                {"name": "Reorder decision", "w": 0.5, "d": 1, "dep": ["Day 7 cohort review"]},
+            ],
+        },
+    ]
+    phase_count = 0
+    task_count = 0
+    # Create phases and tasks
+    for order, phase_def in enumerate(template, start=1):
+        phase_name = phase_def["phase"]
+        key = phase_name.lower().replace(" ", "_").replace("/", "_").replace("+", "plus").replace("–", "-")
+        weight_int = int(phase_def["weight"] * 100)
+        phase = create_phase(tenant, brand_id, key=key, name=phase_name, order=order, weight=weight_int)
+        phase_count += 1
+        for idx, task_def in enumerate(phase_def["tasks"], start=1):
+            task_weight = int(task_def["w"] * 100)
+            duration = task_def["d"]
+            depends = task_def.get("dep", [])
+            create_phase_task(
+                tenant,
+                brand_id,
+                phase.id,
+                name=task_def["name"],
+                duration_days=duration,
+                weight=task_weight,
+                depends_on=depends,
+            )
+            task_count += 1
+    return {"phases_created": phase_count, "tasks_created": task_count}
+
 
 if __name__ == "__main__":
     import uvicorn
