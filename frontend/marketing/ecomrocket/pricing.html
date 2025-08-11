@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>EcomRocket Pricing</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin:0; font-family: sans-serif; background:#f8f8f8; color:#333; }
+    header { background-color:#ff7f11; color:white; padding:1rem; }
+    header h1 { margin:0; font-size:1.5rem; }
+    section.pricing { max-width:900px; margin:2rem auto; padding:1rem; display:flex; flex-wrap:wrap; justify-content:center; }
+    .plan { background:white; border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,0.1); margin:1rem; padding:1.5rem; flex:1 1 200px; text-align:center; }
+    .plan h2 { margin-top:0; color:#ff7f11; }
+    .price { font-size:2rem; font-weight:bold; margin:0.5rem 0; }
+    .features { list-style:none; padding:0; margin:1rem 0; text-align:left; }
+    .features li { margin-bottom:0.5rem; }
+    .cta-btn { display:inline-block; margin-top:1rem; padding:0.5rem 1rem; background-color:#ff7f11; color:white; text-decoration:none; border-radius:20px; }
+    footer { background:#222; color:#aaa; text-align:center; padding:1rem; font-size:0.8rem; margin-top:2rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>EcomRocket Pricing</h1>
+  </header>
+  <section class="pricing">
+    <div class="plan">
+      <h2>Foundation</h2>
+      <p class="price">Free</p>
+      <ul class="features">
+        <li>Company setup and basics</li>
+        <li>Chat access for 30 days</li>
+        <li>Access to the Lobby community</li>
+      </ul>
+      <a class="cta-btn" href="/dashboard/index.html">Start Free</a>
+    </div>
+    <div class="plan">
+      <h2>Validate</h2>
+      <p class="price">$99</p>
+      <ul class="features">
+        <li>Opportunity scoring</li>
+        <li>Unit economics & compliance</li>
+        <li>Unlock Builders ring</li>
+      </ul>
+      <a class="cta-btn" href="/api/checkout?plan=validate">Unlock</a>
+    </div>
+    <div class="plan">
+      <h2>Source</h2>
+      <p class="price">$199</p>
+      <ul class="features">
+        <li>Supplier scripts & negotiations</li>
+        <li>QC & freight basics</li>
+        <li>Unlock Operators ring</li>
+      </ul>
+      <a class="cta-btn" href="/api/checkout?plan=source">Unlock</a>
+    </div>
+    <div class="plan">
+      <h2>Brand</h2>
+      <p class="price">$399</p>
+      <ul class="features">
+        <li>Branding & packaging</li>
+        <li>Professional photos / 3D renders</li>
+        <li>Listing copy & A+ modules</li>
+      </ul>
+      <a class="cta-btn" href="/api/checkout?plan=brand">Unlock</a>
+    </div>
+    <div class="plan">
+      <h2>Launch</h2>
+      <p class="price">$699</p>
+      <ul class="features">
+        <li>PPC campaign scaffolds</li>
+        <li>Pre-launch checklist & reviews</li>
+        <li>Launch & momentum tracking</li>
+      </ul>
+      <a class="cta-btn" href="/api/checkout?plan=launch">Unlock</a>
+    </div>
+    <div class="plan">
+      <h2>Scale</h2>
+      <p class="price">$1,499</p>
+      <ul class="features">
+        <li>TACOS guardrails & scaling</li>
+        <li>Multi-channel (Shopify/Meta)</li>
+        <li>Unlock War Room</li>
+      </ul>
+      <a class="cta-btn" href="/api/checkout?plan=scale">Unlock</a>
+    </div>
+  </section>
+  <footer>
+    © 2025 EcomRocket.ai. All rights reserved.
+  </footer>
+</body>
+</html>
