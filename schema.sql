@@ -145,3 +145,76 @@ CREATE TABLE IF NOT EXISTS tenant_settings (
     copy_tone TEXT,
     domain TEXT
 );
+
+CREATE TABLE IF NOT EXISTS auth_tokens (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_email TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    token_type TEXT NOT NULL,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    used_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email TEXT UNIQUE NOT NULL,
+    tenant_id UUID NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user',
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL,
+    stripe_subscription_id TEXT UNIQUE,
+    plan_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    current_period_start TIMESTAMP WITH TIME ZONE,
+    current_period_end TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS kb_documents (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    metadata JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS commerce_connections (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL,
+    platform TEXT NOT NULL,
+    credentials JSONB NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    last_sync_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL,
+    brand_id UUID NOT NULL,
+    user_id UUID NOT NULL,
+    channel TEXT NOT NULL,
+    raw_message TEXT NOT NULL,
+    parsed_intent JSONB,
+    response TEXT,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS notification_preferences (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL,
+    user_id UUID NOT NULL,
+    email_digest BOOLEAN DEFAULT true,
+    whatsapp_alerts BOOLEAN DEFAULT false,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+);
