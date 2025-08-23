@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Contact - Eazymode</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin:0; font-family: sans-serif; color:#333; background-color:#f8f8f8; }
+    header { background-color:#6366f1; padding:1rem; color:white; }
+    header h1 { margin:0; font-size:1.8rem; }
+    nav { background-color:#4f46e5; padding:0.5rem 1rem; }
+    nav a { color:white; text-decoration:none; margin-right:1rem; }
+    nav a:hover { text-decoration:underline; }
+    main { padding:2rem 1rem; max-width:800px; margin:0 auto; }
+    .contact-form { background:white; padding:2rem; border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,0.1); }
+    .form-group { margin-bottom:1rem; }
+    label { display:block; margin-bottom:0.5rem; font-weight:bold; }
+    input, textarea { width:100%; padding:0.5rem; border:1px solid #ddd; border-radius:4px; }
+    button { background-color:#6366f1; color:white; padding:0.75rem 1.5rem; border:none; border-radius:4px; cursor:pointer; }
+    button:hover { background-color:#4f46e5; }
+    footer { background-color:#222; color:#aaa; text-align:center; padding:1rem; font-size:0.8rem; margin-top:2rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Eazymode</h1>
+  </header>
+  <nav>
+    <a href="/">Home</a>
+    <a href="/solutions">Solutions</a>
+    <a href="/templates">Templates</a>
+    <a href="/pricing">Pricing</a>
+    <a href="/customers">Customers</a>
+    <a href="/docs">Docs</a>
+    <a href="/about">About</a>
+    <a href="/demo">Book a demo</a>
+    <a href="/dashboard/index.html">Dashboard</a>
+  </nav>
+  <main>
+    <h1>Contact Us</h1>
+    <p>Get in touch with our team to learn more about how Eazymode can transform your educational programs.</p>
+    
+    <div class="contact-form">
+      <h2>Send us a message</h2>
+      <form action="/contact" method="post">
+        <div class="form-group">
+          <label for="name">Name</label>
+          <input type="text" id="name" name="name" required>
+        </div>
+        <div class="form-group">
+          <label for="email">Email</label>
+          <input type="email" id="email" name="email" required>
+        </div>
+        <div class="form-group">
+          <label for="company">Company</label>
+          <input type="text" id="company" name="company">
+        </div>
+        <div class="form-group">
+          <label for="subject">Subject</label>
+          <input type="text" id="subject" name="subject" required>
+        </div>
+        <div class="form-group">
+          <label for="message">Message</label>
+          <textarea id="message" name="message" rows="5" required></textarea>
+        </div>
+        <button type="submit">Send Message</button>
+      </form>
+    </div>
+    
+    <div style="margin-top:2rem;">
+      <h2>Other ways to reach us</h2>
+      <p><strong>Email:</strong> hello@eazymode.ai</p>
+      <p><strong>Support:</strong> support@eazymode.ai</p>
+      <p><strong>Sales:</strong> sales@eazymode.ai</p>
+      <p><strong>Schedule a demo:</strong> <a href="/demo">Book a demo</a></p>
+    </div>
+  </main>
+  <footer>
+    © 2025 Eazymode. All rights reserved.
+  </footer>
+</body>
+</html>

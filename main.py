@@ -999,6 +999,72 @@ def app_redirect(request: Request):
     from fastapi.responses import RedirectResponse
     return RedirectResponse(url="/dashboard/index.html", status_code=302)
 
+@app.get("/contact", include_in_schema=False)
+async def contact_page(request: Request):
+    """Serve contact page"""
+    host = request.headers.get("host", "")
+    if "ecomrocket" in host:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/", status_code=302)
+    else:
+        from fastapi.responses import FileResponse
+        return FileResponse("frontend/marketing/eazymode/contact.html")
+
+@app.get("/legal/privacy", include_in_schema=False)
+async def privacy_page(request: Request):
+    """Serve privacy policy page"""
+    host = request.headers.get("host", "")
+    if "ecomrocket" in host:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/", status_code=302)
+    else:
+        from fastapi.responses import FileResponse
+        return FileResponse("frontend/marketing/eazymode/legal/privacy.html")
+
+@app.get("/legal/terms", include_in_schema=False)
+async def terms_page(request: Request):
+    """Serve terms of service page"""
+    host = request.headers.get("host", "")
+    if "ecomrocket" in host:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/", status_code=302)
+    else:
+        from fastapi.responses import FileResponse
+        return FileResponse("frontend/marketing/eazymode/legal/terms.html")
+
+@app.get("/legal/dpa", include_in_schema=False)
+async def dpa_page(request: Request):
+    """Serve data processing agreement page"""
+    host = request.headers.get("host", "")
+    if "ecomrocket" in host:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/", status_code=302)
+    else:
+        from fastapi.responses import FileResponse
+        return FileResponse("frontend/marketing/eazymode/legal/dpa.html")
+
+@app.get("/pricing.html", include_in_schema=False)
+async def ecomrocket_pricing_page(request: Request):
+    """Serve EcomRocket pricing page"""
+    host = request.headers.get("host", "")
+    if "ecomrocket" in host:
+        from fastapi.responses import FileResponse
+        return FileResponse("frontend/marketing/ecomrocket/pricing.html")
+    else:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/pricing", status_code=302)
+
+@app.get("/mentorship.html", include_in_schema=False)
+async def ecomrocket_mentorship_page(request: Request):
+    """Serve EcomRocket mentorship page"""
+    host = request.headers.get("host", "")
+    if "ecomrocket" in host:
+        from fastapi.responses import FileResponse
+        return FileResponse("frontend/marketing/ecomrocket/mentorship.html")
+    else:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/", status_code=302)
+
 @app.get("/{path:path}", response_class=HTMLResponse, include_in_schema=False)
 def spa_fallback(request: Request, path: str) -> HTMLResponse:
     """
