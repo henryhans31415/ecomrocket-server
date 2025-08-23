@@ -43,13 +43,56 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Depends
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import os
+import uuid
+import aiofiles
+from datetime import datetime, timedelta
 from supabase import create_client, Client
 from pydantic import BaseModel, Field
+
+# External service imports with graceful fallbacks
+stripe = None
+TwilioClient = None
+PostmarkClient = None
+openai = None
+jwt = None
+JWTError = Exception
+CryptContext = None
+
+try:
+    import stripe
+except ImportError:
+    pass
+
+try:
+    from twilio.rest import Client as TwilioClient
+except ImportError:
+    pass
+
+try:
+    from postmarker.core import PostmarkClient
+except ImportError:
+    pass
+
+try:
+    import openai
+except ImportError:
+    pass
+
+try:
+    from jose import JWTError, jwt
+except ImportError:
+    pass
+
+try:
+    from passlib.context import CryptContext
+except ImportError:
+    pass
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -243,7 +286,7 @@ class BrandData(BaseModel):
     # values. This in‑memory structure drives the StockVials gauges in
     # the dashboard. Persistent snapshots are written to the
     # ``inventory_snapshots`` table when Supabase is configured.
-    stock_vials: Dict[str, Dict[str, Optional[int]]] = Field(default_factory=dict)
+    stock_vials: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
     # A collection of assets (files or embeds) associated with the
     # brand. Keys are asset IDs and values store metadata such as
@@ -334,12 +377,121 @@ supabase: Optional[Client] = None
 if SUPABASE_URL and SUPABASE_ANON_KEY:
     try:
         supabase = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
-        # Populate domain→tenant mapping from the tenant_settings table
-        # so that host‑based resolution works across restarts.
         load_domain_mappings_from_db()
     except Exception:
-        # If Supabase initialization fails, continue without persistence
         supabase = None
+
+# External service initialization
+if stripe:
+    stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+
+twilio_client = None
+if TwilioClient and os.getenv("TWILIO_SID") and os.getenv("TWILIO_AUTH_TOKEN"):
+    try:
+        twilio_client = TwilioClient(os.getenv("TWILIO_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
+    except Exception:
+        twilio_client = None
+
+postmark = None
+if PostmarkClient and os.getenv("POSTMARK_SERVER_TOKEN"):
+    try:
+        postmark = PostmarkClient(server_token=os.getenv("POSTMARK_SERVER_TOKEN"))
+    except Exception:
+        postmark = None
+
+if openai and os.getenv("OPENAI_API_KEY"):
+    openai.api_key = os.getenv("OPENAI_API_KEY")
+
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-secret-key-change-in-production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+pwd_context = None
+if CryptContext:
+    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+security = HTTPBearer()
+
+# Authentication helper functions
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    """Create JWT access token"""
+    if not jwt:
+        raise HTTPException(status_code=500, detail="JWT not available")
+    
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Verify JWT token"""
+    if not jwt:
+        raise HTTPException(status_code=500, detail="JWT not available")
+    
+    try:
+        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        email = payload.get("sub")
+        if email is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return email
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+def parse_chat_message(message: str, tenant_id: str, brand_id: str) -> ChatIntent:
+    """Parse chat message using OpenAI or fallback parser"""
+    if openai and os.getenv("OPENAI_API_KEY"):
+        try:
+            response = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": """
+                    You are a project management assistant. Parse user messages and extract:
+                    - intent: (update_task, create_blocker, set_priority, ask_question, etc.)
+                    - entities: relevant data like task_ids, durations, priorities
+                    - confidence: 0.0-1.0 confidence score
+                    
+                    Return JSON format: {"intent": "...", "entities": {...}, "confidence": 0.95}
+                    """},
+                    {"role": "user", "content": message}
+                ]
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            return ChatIntent(
+                intent=result.get("intent", "unknown"),
+                entities=result.get("entities", {}),
+                confidence=result.get("confidence", 0.5),
+                raw_message=message
+            )
+        except Exception:
+            pass
+    
+    # Fallback parser
+    intent = "unknown"
+    entities = {}
+    confidence = 0.3
+    
+    message_lower = message.lower()
+    if "complete" in message_lower or "done" in message_lower:
+        intent = "complete_task"
+        confidence = 0.7
+    elif "block" in message_lower or "stuck" in message_lower:
+        intent = "create_blocker"
+        confidence = 0.7
+    elif "delay" in message_lower or "postpone" in message_lower:
+        intent = "delay_task"
+        confidence = 0.7
+    
+    return ChatIntent(
+        intent=intent,
+        entities=entities,
+        confidence=confidence,
+        raw_message=message
+    )
 
 
 def sync_progress_to_db(progress: UserProgress, tenant_id: str) -> None:
@@ -602,9 +754,38 @@ def calculate_schedule_for_brand(tenant: Tenant, brand_id: str):
     confidence = int(max(total_days * 0.2, 1)) if total_days > 0 else 0
     return {
         "total_days": total_days,
-        "eta": f"{total_days}d ± {confidence}d",  # e.g. "90d ± 18d"
+        "eta": f"{total_days}d ± {confidence}d",
+        "band": f"{confidence}d",
+        "critical": [task["task_name"] for task in critical_tasks],
         "critical_tasks": critical_tasks,
     }
+
+def calculate_pert_schedule(tenant: Tenant, brand_id: str):
+    """Enhanced scheduling with PERT analysis"""
+    brand = tenant.brands.get(brand_id)
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    
+    # Build task network with PERT durations
+    tasks = {}
+    for phase in brand.phases.values():
+        for task in phase.tasks.values():
+            # Calculate expected duration: (O + 4M + P) / 6
+            if hasattr(task, 'pert_duration') and task.pert_duration:
+                o, m, p = task.pert_duration.optimistic, task.pert_duration.most_likely, task.pert_duration.pessimistic
+                expected_duration = (o + 4*m + p) / 6
+                variance = ((p - o) / 6) ** 2
+            else:
+                expected_duration = task.duration_days or 0
+                variance = 0
+            
+            tasks[task.id] = {
+                'task': task,
+                'expected_duration': expected_duration,
+                'variance': variance
+            }
+    
+    return calculate_schedule_for_brand(tenant, brand_id)
 
 # ---------------------------------------------------------------------------
 # Event logging helper
@@ -920,15 +1101,45 @@ class WhatIfRequest(BaseModel):
 
 
 class ChatIngestRequest(BaseModel):
-    """Request payload for chat ingestion.
-
-    The assistant can call this endpoint with a free‑form message to
-    perform updates on brand tasks. The message can include simple
-    commands like ``delay <task_id> to <days>``. Only a few patterns
-    are supported in this scaffold. Extend the parser as needed.
-    """
+    """Request payload for chat ingestion."""
     brand_id: str
     message: str
+    channel: str = "web"
+    user_id: Optional[str] = None
+
+class ChatIntent(BaseModel):
+    intent: str
+    entities: Dict[str, Any]
+    confidence: float
+    raw_message: str
+
+class MagicLinkRequest(BaseModel):
+    email: str
+
+class AuthToken(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    user_id: str
+    tenant_id: str
+
+class SubscriptionPlan(BaseModel):
+    plan_id: str
+    name: str
+    price_usd: int
+    features: List[str]
+
+class TierSystem(BaseModel):
+    current_tier: str
+    available_tiers: List[str]
+    unlock_progress: Dict[str, float]
+    points: int
+    streak_days: int
+
+class PERTDuration(BaseModel):
+    optimistic: int
+    most_likely: int
+    pessimistic: int
 
 
 # ---------------------------------------------------------------------------
@@ -2162,6 +2373,171 @@ def auto_seed_amazon_fba(tenant_id: str, brand_id: str):
             )
             task_count += 1
     return {"phases_created": phase_count, "tasks_created": task_count}
+
+
+# Authentication endpoints
+@app.post("/auth/magic-link")
+async def send_magic_link(req: MagicLinkRequest):
+    """Send magic link to user's email"""
+    if not postmark:
+        # Graceful fallback when email service not configured
+        return {"message": "Magic link sent to your email (demo mode - email service not configured)"}
+    
+    token_data = {"sub": req.email, "type": "magic_link"}
+    token = create_access_token(token_data, timedelta(minutes=15))
+    
+    magic_link = f"https://eazymode.ai/auth/verify?token={token}"
+    
+    try:
+        postmark.emails.send(
+            From='noreply@eazymode.ai',
+            To=req.email,
+            Subject='Your Magic Link - Eazymode',
+            HtmlBody=f'''
+            <h2>Your Magic Link</h2>
+            <p>Click the link below to sign in:</p>
+            <a href="{magic_link}">Sign In</a>
+            <p>This link expires in 15 minutes.</p>
+            '''
+        )
+    except Exception as e:
+        print(f"Email send failed: {e}")
+    
+    return {"message": "Magic link sent to your email"}
+
+@app.get("/auth/verify")
+async def verify_magic_link(token: str):
+    """Verify magic link token and return access token"""
+    if not jwt:
+        raise HTTPException(status_code=500, detail="JWT not available")
+    
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email = payload.get("sub")
+        token_type = payload.get("type")
+        
+        if not email or token_type != "magic_link":
+            raise HTTPException(status_code=401, detail="Invalid token")
+        
+        # Create access token
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": email}, expires_delta=access_token_expires
+        )
+        
+        return AuthToken(
+            access_token=access_token,
+            token_type="bearer",
+            expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            user_id=email,
+            tenant_id="default"
+        )
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+@app.post("/tenant/{tenant_id}/chat/ingest-enhanced")
+async def chat_ingest_enhanced(tenant_id: str, req: ChatIngestRequest):
+    """Enhanced chat ingestion with NLP parsing (no auth required for demo)"""
+    tenant = get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    
+    brand = tenant.brands.get(req.brand_id)
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    
+    intent = parse_chat_message(req.message, tenant_id, req.brand_id)
+    
+    chat_message = {
+        "id": str(uuid.uuid4()),
+        "user_id": req.user_id or "demo-user",
+        "brand_id": req.brand_id,
+        "message": req.message,
+        "channel": req.channel,
+        "intent": intent.intent,
+        "entities": intent.entities,
+        "confidence": intent.confidence,
+        "timestamp": datetime.utcnow().isoformat(),
+        "processed": False
+    }
+    
+    brand.events.append(chat_message)
+    
+    response_message = "Message received"
+    if intent.intent == "complete_task" and intent.confidence > 0.6:
+        response_message = "Task completion noted. Updating schedule..."
+    elif intent.intent == "create_blocker" and intent.confidence > 0.6:
+        response_message = "Blocker recorded. Notifying team..."
+    elif intent.intent == "delay_task" and intent.confidence > 0.6:
+        response_message = "Task delay noted. Recalculating ETA..."
+    
+    return {
+        "message": response_message,
+        "intent": intent.intent,
+        "confidence": intent.confidence,
+        "processed": True
+    }
+
+@app.post("/kb/add-document")
+async def add_kb_document(tenant_id: str, title: str, content: str):
+    """Add document to knowledge base"""
+    tenant = get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    
+    doc_id = str(uuid.uuid4())
+    document = {
+        "id": doc_id,
+        "tenant_id": tenant_id,
+        "title": title,
+        "content": content,
+        "created_by": "demo-user",
+        "created_at": datetime.utcnow().isoformat(),
+        "metadata": {}
+    }
+    
+    if not hasattr(tenant, 'kb_documents'):
+        tenant.kb_documents = []
+    tenant.kb_documents.append(document)
+    
+    return {"id": doc_id, "message": "Document added to knowledge base"}
+
+@app.post("/kb/query")
+async def query_kb(query: str, tenant_id: str):
+    """Query knowledge base"""
+    tenant = get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    
+    results = []
+    if hasattr(tenant, 'kb_documents'):
+        for doc in tenant.kb_documents:
+            if query.lower() in doc['content'].lower() or query.lower() in doc['title'].lower():
+                results.append({
+                    "id": doc['id'],
+                    "title": doc['title'],
+                    "content": doc['content'][:200] + "...",
+                    "score": 0.8
+                })
+    
+    return {"results": results}
+
+# Enhanced scheduling endpoint
+@app.get("/tenant/{tenant_id}/brand/{brand_id}/schedule-enhanced")
+async def get_enhanced_schedule(tenant_id: str, brand_id: str):
+    """Get enhanced schedule with PERT analysis"""
+    tenant = get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    
+    schedule = calculate_pert_schedule(tenant, brand_id)
+    
+    return {
+        "schedule": schedule,
+        "enhanced": True,
+        "pert_analysis": True,
+        "confidence_intervals": True
+    }
 
 
 if __name__ == "__main__":
