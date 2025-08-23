@@ -42,6 +42,104 @@
       border-radius: 4px;
       overflow-x: auto;
     }
+    
+    /* River Gantt styles */
+    .river-gantt {
+      background: linear-gradient(90deg, #e3f2fd 0%, #bbdefb 100%);
+      border-radius: 8px;
+      padding: 1rem;
+      margin: 1rem 0;
+    }
+    
+    .gantt-timeline {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+    
+    .gantt-task {
+      background: #2196f3;
+      color: white;
+      padding: 0.5rem;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      min-width: 60px;
+      text-align: center;
+    }
+    
+    .gantt-task.critical-path {
+      background: linear-gradient(45deg, #ff5722, #ff9800);
+      animation: flow 2s ease-in-out infinite;
+    }
+    
+    .gantt-placeholder {
+      color: #666;
+      font-style: italic;
+      padding: 0.5rem;
+    }
+    
+    @keyframes flow {
+      0%, 100% { opacity: 0.8; }
+      50% { opacity: 1; }
+    }
+    
+    /* Stock Vials styles */
+    .stock-vials {
+      display: flex;
+      gap: 1rem;
+      margin: 1rem 0;
+      flex-wrap: wrap;
+    }
+    
+    .stock-vial {
+      text-align: center;
+    }
+    
+    .vial-container {
+      width: 40px;
+      height: 100px;
+      border: 2px solid #ccc;
+      border-radius: 0 0 20px 20px;
+      position: relative;
+      background: #f5f5f5;
+      overflow: hidden;
+    }
+    
+    .vial-fill {
+      position: absolute;
+      bottom: 0;
+      width: 100%;
+      background: linear-gradient(0deg, #4caf50 0%, #8bc34a 100%);
+      transition: height 0.3s ease;
+    }
+    
+    .vial-label {
+      font-size: 0.7rem;
+      font-weight: bold;
+      margin-top: 0.5rem;
+    }
+    
+    .vial-days {
+      font-size: 0.6rem;
+      color: #666;
+    }
+    
+    /* Phase progress enhancements */
+    .phase-progress {
+      background: #e0e0e0;
+      border-radius: 10px;
+      height: 20px;
+      overflow: hidden;
+      margin: 0.5rem 0;
+    }
+    
+    .phase-progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #4caf50 0%, #8bc34a 100%);
+      transition: width 0.3s ease;
+      border-radius: 10px;
+    }
   </style>
 </head>
 <body>

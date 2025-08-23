@@ -362,4 +362,195 @@ document.addEventListener('DOMContentLoaded', () => {
         container.textContent = 'Error loading details: ' + err.message;
       }
     }
+
+    
+    function renderRiverGantt(schedule, container) {
+        const ganttDiv = document.createElement('div');
+        ganttDiv.className = 'river-gantt';
+        
+        const timeline = document.createElement('div');
+        timeline.className = 'gantt-timeline';
+        
+        if (schedule.critical_tasks && schedule.critical_tasks.length > 0) {
+            schedule.critical_tasks.forEach(task => {
+                const taskBar = document.createElement('div');
+                taskBar.className = 'gantt-task critical-path';
+                taskBar.style.width = `${Math.max(task.duration || 10, 10) * 10}px`;
+                taskBar.textContent = task.task_name || task.name || 'Task';
+                timeline.appendChild(taskBar);
+            });
+        } else {
+            const placeholder = document.createElement('div');
+            placeholder.className = 'gantt-placeholder';
+            placeholder.textContent = 'No critical path tasks';
+            timeline.appendChild(placeholder);
+        }
+        
+        ganttDiv.appendChild(timeline);
+        container.appendChild(ganttDiv);
+    }
+    
+    function renderStockVials(stockData, container) {
+        const vialsContainer = document.createElement('div');
+        vialsContainer.className = 'stock-vials';
+        
+        if (!stockData || Object.keys(stockData).length === 0) {
+            const placeholder = document.createElement('div');
+            placeholder.textContent = 'No stock data available';
+            vialsContainer.appendChild(placeholder);
+            container.appendChild(vialsContainer);
+            return;
+        }
+        
+        Object.entries(stockData).forEach(([sku, data]) => {
+            const vial = document.createElement('div');
+            vial.className = 'stock-vial';
+            
+            const daysCover = data.days_cover || 0;
+            const level = Math.min(daysCover / 30, 1); // 30 days = full
+            const fillHeight = level * 100;
+            
+            vial.innerHTML = `
+                <div class="vial-container">
+                    <div class="vial-fill" style="height: ${fillHeight}%"></div>
+                    <div class="vial-label">${sku}</div>
+                    <div class="vial-days">${daysCover}d</div>
+                </div>
+            `;
+            
+            vialsContainer.appendChild(vial);
+        });
+        
+        container.appendChild(vialsContainer);
+    }
+    
+    async function loadBrandDetailsEnhanced(tenantId, brandId, container) {
+        container.innerHTML = '<em>Loading details...</em>';
+        try {
+            const [glassResp, schedResp, stockResp] = await Promise.all([
+                fetch(`/tenant/${tenantId}/brand/${brandId}/phaseglass`),
+                fetch(`/tenant/${tenantId}/brand/${brandId}/schedule`),
+                fetch(`/tenant/${tenantId}/brand/${brandId}/stock-snapshot`).catch(() => ({ ok: false }))
+            ]);
+            
+            if (!glassResp.ok) throw new Error(await glassResp.text());
+            if (!schedResp.ok) throw new Error(await schedResp.text());
+            
+            const glass = await glassResp.json();
+            const sched = await schedResp.json();
+            let stockData = {};
+            
+            if (stockResp.ok) {
+                try {
+                    stockData = await stockResp.json();
+                } catch (e) {
+                    stockData = {};
+                }
+            }
+            
+            container.innerHTML = '';
+            
+            // Schedule summary with River Gantt
+            const schedDiv = document.createElement('div');
+            schedDiv.style.marginBottom = '1rem';
+            const eta = sched.eta || 'n/a';
+            const band = sched.band || '';
+            const crit = Array.isArray(sched.critical) ? sched.critical.join(', ') : '';
+            schedDiv.innerHTML = `
+                <strong>Launch ETA:</strong> ${eta}${band ? ' ± ' + band : ''}<br>
+                <strong>Critical path:</strong> ${crit}
+            `;
+            container.appendChild(schedDiv);
+            
+            const ganttTitle = document.createElement('h4');
+            ganttTitle.textContent = 'Critical Path Timeline';
+            container.appendChild(ganttTitle);
+            renderRiverGantt(sched, container);
+            
+            if (Object.keys(stockData).length > 0) {
+                const stockTitle = document.createElement('h4');
+                stockTitle.textContent = 'Stock Levels';
+                container.appendChild(stockTitle);
+                renderStockVials(stockData, container);
+            }
+            
+            if (Array.isArray(glass.phases)) {
+                const phasesTitle = document.createElement('h4');
+                phasesTitle.textContent = 'Phase Progress';
+                container.appendChild(phasesTitle);
+                
+                glass.phases.forEach(phase => {
+                    const phaseDiv = document.createElement('div');
+                    phaseDiv.className = 'phase';
+                    const phaseHeader = document.createElement('div');
+                    phaseHeader.innerHTML = `<strong>${phase.phase_name}</strong>`;
+                    phaseDiv.appendChild(phaseHeader);
+                    
+                    const barContainer = document.createElement('div');
+                    barContainer.className = 'phase-progress';
+                    const bar = document.createElement('div');
+                    bar.className = 'phase-progress-bar';
+                    const completion = Math.round((phase.completion || 0) * 100);
+                    bar.style.width = `${completion}%`;
+                    barContainer.appendChild(bar);
+                    phaseDiv.appendChild(barContainer);
+                    
+                    const status = document.createElement('div');
+                    status.style.fontSize = '0.8rem';
+                    status.style.color = '#666';
+                    status.textContent = `${completion}% complete`;
+                    phaseDiv.appendChild(status);
+                    
+                    const ul = document.createElement('ul');
+                    ul.className = 'task-list';
+                    if (Array.isArray(phase.tasks) && phase.tasks.length) {
+                        phase.tasks.forEach(task => {
+                            const li = document.createElement('li');
+                            li.textContent = `${task.task_name || task.title} - ${task.done ? 'Done' : 'Pending'}`;
+                            ul.appendChild(li);
+                        });
+                    } else {
+                        const li = document.createElement('li');
+                        li.textContent = 'No tasks yet';
+                        ul.appendChild(li);
+                    }
+                    phaseDiv.appendChild(ul);
+                    
+                    // Add Task button
+                    const addTaskBtn = document.createElement('button');
+                    addTaskBtn.textContent = 'Add Task';
+                    addTaskBtn.style.marginBottom = '0.5rem';
+                    addTaskBtn.onclick = async () => {
+                        const name = prompt('Task name:');
+                        if (!name) return;
+                        const durationStr = prompt('Duration in days:');
+                        const duration = parseInt(durationStr, 10) || 1;
+                        const weightStr = prompt('Task weight (0-1, optional):');
+                        const weight = weightStr ? parseFloat(weightStr) : undefined;
+                        const depsStr = prompt('Depends on (comma separated task IDs, optional):');
+                        let depends_on = [];
+                        if (depsStr) depends_on = depsStr.split(',').map(s => s.trim()).filter(Boolean);
+                        try {
+                            const body = { name, duration_days: duration };
+                            if (typeof weight !== 'undefined' && !Number.isNaN(weight)) body.weight = weight;
+                            if (depends_on.length > 0) body.depends_on = depends_on;
+                            const resp = await fetch(`/tenant/${tenantId}/brand/${brandId}/phase/${phase.phase_id}/task`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(body)
+                            });
+                            if (!resp.ok) throw new Error(await resp.text());
+                            await loadBrandDetailsEnhanced(tenantId, brandId, container);
+                        } catch (err) {
+                            alert('Error creating task: ' + err.message);
+                        }
+                    };
+                    phaseDiv.appendChild(addTaskBtn);
+                    container.appendChild(phaseDiv);
+                });
+            }
+        } catch (err) {
+            container.textContent = 'Error loading details: ' + err.message;
+        }
+    }
 });
