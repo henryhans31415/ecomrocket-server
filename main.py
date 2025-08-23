@@ -64,35 +64,63 @@ jwt = None
 JWTError = Exception
 CryptContext = None
 
+MOCK_MODE = os.getenv("MOCK_MODE", "false").lower() == "true"
+
 try:
     import stripe
+    if os.getenv("STRIPE_SECRET_KEY") and not MOCK_MODE:
+        stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+        print("✅ Stripe initialized successfully")
+    else:
+        print("🔧 Stripe running in mock mode" if MOCK_MODE else "⚠️  Stripe credentials not configured")
 except ImportError:
-    pass
+    print("📦 Stripe not available - install with: pip install stripe")
 
 try:
     from twilio.rest import Client as TwilioClient
+    if os.getenv("TWILIO_SID") and os.getenv("TWILIO_AUTH_TOKEN") and not MOCK_MODE:
+        twilio_client = TwilioClient(os.getenv("TWILIO_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
+        print("✅ Twilio initialized successfully")
+    else:
+        twilio_client = None
+        print("🔧 Twilio running in mock mode" if MOCK_MODE else "⚠️  Twilio credentials not configured")
 except ImportError:
-    pass
+    twilio_client = None
+    print("📦 Twilio not available - install with: pip install twilio")
 
 try:
     from postmarker.core import PostmarkClient
+    if os.getenv("POSTMARK_SERVER_TOKEN") and not MOCK_MODE:
+        postmark = PostmarkClient(server_token=os.getenv("POSTMARK_SERVER_TOKEN"))
+        print("✅ Postmark initialized successfully")
+    else:
+        postmark = None
+        print("🔧 Postmark running in mock mode" if MOCK_MODE else "⚠️  Postmark credentials not configured")
 except ImportError:
-    pass
+    postmark = None
+    print("📦 Postmark not available - install with: pip install postmarker")
 
 try:
     import openai
+    if os.getenv("OPENAI_API_KEY") and not MOCK_MODE:
+        openai.api_key = os.getenv("OPENAI_API_KEY")
+        print("✅ OpenAI initialized successfully")
+    else:
+        print("🔧 OpenAI running in mock mode" if MOCK_MODE else "⚠️  OpenAI credentials not configured")
 except ImportError:
-    pass
+    print("📦 OpenAI not available - install with: pip install openai")
 
 try:
     from jose import JWTError, jwt
+    print("✅ JWT support available")
 except ImportError:
-    pass
+    print("📦 JWT not available - install with: pip install python-jose[cryptography]")
 
 try:
     from passlib.context import CryptContext
+    print("✅ Password hashing available")
 except ImportError:
-    pass
+    print("📦 Password hashing not available - install with: pip install passlib[bcrypt]")
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -2383,31 +2411,37 @@ def auto_seed_amazon_fba(tenant_id: str, brand_id: str):
 @app.post("/auth/magic-link")
 async def send_magic_link(req: MagicLinkRequest):
     """Send magic link to user's email"""
-    if not postmark:
-        # Graceful fallback when email service not configured
-        return {"message": "Magic link sent to your email (demo mode - email service not configured)"}
-    
     token_data = {"sub": req.email, "type": "magic_link"}
     token = create_access_token(token_data, timedelta(minutes=15))
     
     magic_link = f"https://eazymode.ai/auth/verify?token={token}"
     
-    try:
-        postmark.emails.send(
-            From='noreply@eazymode.ai',
-            To=req.email,
-            Subject='Your Magic Link - Eazymode',
-            HtmlBody=f'''
-            <h2>Your Magic Link</h2>
-            <p>Click the link below to sign in:</p>
-            <a href="{magic_link}">Sign In</a>
-            <p>This link expires in 15 minutes.</p>
-            '''
-        )
-    except Exception as e:
-        print(f"Email send failed: {e}")
-    
-    return {"message": "Magic link sent to your email"}
+    if postmark and not MOCK_MODE:
+        try:
+            postmark.emails.send(
+                From='noreply@eazymode.ai',
+                To=req.email,
+                Subject='Your Magic Link - Eazymode',
+                HtmlBody=f'''
+                <h2>Your Magic Link</h2>
+                <p>Click the link below to sign in:</p>
+                <a href="{magic_link}">Sign In</a>
+                <p>This link expires in 15 minutes.</p>
+                '''
+            )
+            return {"message": "Magic link sent to your email", "status": "sent", "email": req.email}
+        except Exception as e:
+            print(f"Email send failed: {e}")
+            return {"message": "Failed to send magic link", "status": "error", "error": str(e)}
+    else:
+        # Mock mode or email service not configured
+        return {
+            "message": "Magic link generated (development mode)", 
+            "magic_link": magic_link,
+            "status": "development",
+            "email": req.email,
+            "note": "In production, this would be sent via email"
+        }
 
 @app.get("/auth/verify")
 async def verify_magic_link(token: str):
@@ -2522,6 +2556,92 @@ async def query_kb(query: str, tenant_id: str):
             })
     
     return {"results": results}
+
+@app.post("/webhooks/whatsapp")
+async def whatsapp_webhook(request: Request):
+    """Handle incoming WhatsApp messages via Twilio"""
+    try:
+        form_data = await request.form()
+        message = form_data.get("Body", "")
+        from_number = form_data.get("From", "")
+        
+        if not message:
+            return {"status": "no_message"}
+        
+        tenant_id = "default"
+        brand_id = "default"
+        
+        chat_intent = parse_chat_message(message, tenant_id, brand_id)
+        
+        response_message = f"Understood: {chat_intent.intent} (confidence: {chat_intent.confidence:.1f})"
+        
+        if twilio_client and not MOCK_MODE:
+            try:
+                twilio_client.messages.create(
+                    body=response_message,
+                    from_=os.getenv("WHATSAPP_NUMBER", "whatsapp:+14155238886"),
+                    to=from_number
+                )
+                return {
+                    "status": "processed",
+                    "intent": chat_intent.intent,
+                    "confidence": chat_intent.confidence,
+                    "response": response_message,
+                    "sent_via": "whatsapp"
+                }
+            except Exception as e:
+                print(f"WhatsApp send failed: {e}")
+                return {
+                    "status": "processed_with_error",
+                    "intent": chat_intent.intent,
+                    "confidence": chat_intent.confidence,
+                    "response": response_message,
+                    "error": str(e)
+                }
+        else:
+            return {
+                "status": "processed_mock",
+                "intent": chat_intent.intent,
+                "confidence": chat_intent.confidence,
+                "response": response_message,
+                "note": "In production, this would be sent via WhatsApp",
+                "from_number": from_number
+            }
+    except Exception as e:
+        print(f"WhatsApp webhook error: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.post("/webhooks/telegram")
+async def telegram_webhook(request: Request):
+    """Handle incoming Telegram messages"""
+    try:
+        data = await request.json()
+        message = data.get("message", {})
+        text = message.get("text", "")
+        chat_id = message.get("chat", {}).get("id")
+        
+        if not text:
+            return {"status": "no_message"}
+        
+        tenant_id = "default"
+        brand_id = "default"
+        
+        chat_intent = parse_chat_message(text, tenant_id, brand_id)
+        
+        response_message = f"Understood: {chat_intent.intent} (confidence: {chat_intent.confidence:.1f})"
+        
+        # In production, would send response back via Telegram Bot API
+        return {
+            "status": "processed_mock",
+            "intent": chat_intent.intent,
+            "confidence": chat_intent.confidence,
+            "response": response_message,
+            "note": "In production, this would be sent via Telegram",
+            "chat_id": chat_id
+        }
+    except Exception as e:
+        print(f"Telegram webhook error: {e}")
+        return {"status": "error", "message": str(e)}
 
 # Enhanced scheduling endpoint
 @app.get("/tenant/{tenant_id}/brand/{brand_id}/schedule-enhanced")
