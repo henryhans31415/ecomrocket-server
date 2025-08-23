@@ -35,6 +35,10 @@ resets when the process restarts. Replace with a real database
 (e.g. Postgres or Supabase) for production use.
 """
 
+from fastapi.responses import HTMLResponse
+import os
+
+
 from __future__ import annotations
 
 import json
@@ -745,7 +749,25 @@ app.mount(
 )
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
-def root():
+def root(request: Request) -> HTMLResponse:
+    """
+    Serve the marketing site at the root URL. It picks the folder based on the
+    host header (eazymode or ecomrocket) and returns the appropriate index.html.
+    """
+    host = request.headers.get("host", "").lower()
+    folder = "eazymode"
+    if "ecomrocket" in host:
+        folder = "ecomrocket"
+    base_dir = os.path.dirname(__file__)
+    index_file_path = os.path.join(
+        base_dir, "frontend", "marketing", folder, "index.html"
+    )
+    try:
+        with open(index_file_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+    except FileNotFoundError:
+        return HTMLResponse("<h1>Marketing page not found</h1>")
+
     """Serve a basic landing page at the service root.
 
     When a user navigates to the root domain (e.g. https://ecomrocket.ai/ or
