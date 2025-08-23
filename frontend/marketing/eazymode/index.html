@@ -64,5 +64,32 @@
     <div id="root"></div>
     <!-- This is a replit script which adds a banner on the top of the page when opened in development mode outside the replit environment -->
     <script type="text/javascript" src="https://replit.com/public/js/replit-dev-banner.js"></script>
+    
+    <!-- Fix broken links that point to app.eazymode.ai -->
+    <script>
+      document.addEventListener('DOMContentLoaded', function() {
+        // Intercept clicks to app.eazymode.ai and redirect to dashboard
+        document.addEventListener('click', function(e) {
+          const target = e.target.closest('a');
+          if (target && target.href && target.href.includes('app.eazymode.ai')) {
+            e.preventDefault();
+            window.location.href = '/dashboard/index.html';
+          }
+        });
+        
+        // Also fix any buttons that might trigger window.location changes
+        const buttons = document.querySelectorAll('button');
+        buttons.forEach(button => {
+          button.addEventListener('click', function(e) {
+            // Check if this button's click handler would redirect to app.eazymode.ai
+            const onClick = this.getAttribute('onclick');
+            if (onClick && onClick.includes('app.eazymode.ai')) {
+              e.preventDefault();
+              window.location.href = '/dashboard/index.html';
+            }
+          });
+        });
+      });
+    </script>
   </body>
 </html>
