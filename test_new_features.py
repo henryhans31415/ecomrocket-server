@@ -27,39 +27,80 @@ def test_chat_endpoints():
     print("\nTesting chat endpoints...")
     
     try:
-        response = requests.post(f"{BASE_URL}/tenant/default/chat/ingest",
+        response = requests.post(f"{BASE_URL}/tenant?name=Chat%20Test%20Tenant")
+        if response.status_code == 200:
+            tenant_data = response.json()
+            tenant_id = tenant_data.get('tenant_id')
+            print(f"Created chat test tenant: {tenant_id}")
+            
+            response = requests.post(f"{BASE_URL}/tenant/{tenant_id}/brand",
+                                   json={
+                                       "name": "Test Brand",
+                                       "description": "Test brand for chat testing"
+                                   })
+            if response.status_code == 200:
+                brand_data = response.json()
+                brand_id = brand_data.get('brand_id')
+                print(f"Created test brand: {brand_id}")
+            else:
+                brand_id = "test-brand"
+        else:
+            tenant_id = "default"
+            brand_id = "test-brand"
+    except:
+        tenant_id = "default"
+        brand_id = "test-brand"
+    
+    try:
+        response = requests.post(f"{BASE_URL}/tenant/{tenant_id}/chat/ingest-enhanced",
                                json={
-                                   "brand_id": "test-brand",
+                                   "brand_id": brand_id,
                                    "message": "complete task-123",
                                    "channel": "web"
                                })
-        print(f"Chat ingest: {response.status_code}")
-        if response.status_code in [200, 404]:  # 404 is ok if brand doesn't exist
-            print("✓ Chat ingest endpoint working")
+        print(f"Chat ingest enhanced: {response.status_code}")
+        if response.status_code == 200:
+            print("✓ Chat ingest enhanced endpoint working")
+            result = response.json()
+            print(f"  Intent: {result.get('intent')}, Confidence: {result.get('confidence')}")
         else:
-            print(f"✗ Chat ingest failed: {response.text}")
+            print(f"✗ Chat ingest enhanced failed: {response.text}")
     except Exception as e:
-        print(f"✗ Chat ingest error: {e}")
+        print(f"✗ Chat ingest enhanced error: {e}")
 
 def test_knowledge_base():
     """Test knowledge base endpoints"""
     print("\nTesting knowledge base...")
     
     try:
-        response = requests.post(f"{BASE_URL}/kb/add-document",
-                               params={
-                                   "tenant_id": "default",
-                                   "title": "Test Document",
-                                   "content": "This is a test document for the knowledge base."
-                               })
+        response = requests.post(f"{BASE_URL}/tenant?name=Test%20Tenant")
+        if response.status_code == 200:
+            tenant_data = response.json()
+            tenant_id = tenant_data.get('tenant_id')
+            print(f"Created test tenant: {tenant_id}")
+        else:
+            print("Using default tenant ID")
+            tenant_id = "default"
+    except:
+        tenant_id = "default"
+    
+    try:
+        response = requests.post(f"{BASE_URL}/kb/add-document?tenant_id={tenant_id}&title=Test%20Document&content=This%20is%20a%20test%20document%20for%20the%20knowledge%20base.")
         print(f"Add KB document: {response.status_code}")
+        if response.status_code == 200:
+            print("✓ Add document working")
+        else:
+            print(f"✗ Add document failed: {response.text}")
         
-        response = requests.post(f"{BASE_URL}/kb/query",
-                               params={
-                                   "query": "test",
-                                   "tenant_id": "default"
-                               })
+        response = requests.post(f"{BASE_URL}/kb/query?query=test&tenant_id={tenant_id}")
         print(f"Query KB: {response.status_code}")
+        if response.status_code == 200:
+            print("✓ Query working")
+            result = response.json()
+            print(f"  Found {len(result.get('results', []))} results")
+        else:
+            print(f"✗ Query failed: {response.text}")
+            
         if response.status_code == 200:
             print("✓ Knowledge base endpoints working")
     except Exception as e:

@@ -232,6 +232,10 @@ class Tenant(BaseModel):
     brands: Dict[str, "BrandData"] = Field(default_factory=dict)
     # Optional settings controlling the tenant's branding and theme.
     settings: Optional[TenantSettings] = None
+    # Knowledge base documents for this tenant
+    kb_documents: List[Dict] = Field(default_factory=list)
+    # Chat messages for this tenant
+    chat_messages: List[Dict] = Field(default_factory=list)
 
 
 class PhaseTaskData(BaseModel):
@@ -1562,7 +1566,7 @@ def create_brand_endpoint(tenant_id: str, req: BrandCreateRequest):
     brand = create_brand(tenant, req.name, req.color_token, req.logo_url)
     # Log event for brand creation
     log_event(tenant_id, brand, "brand_created", {"name": req.name})
-    return brand
+    return {"brand_id": brand.id, "brand": brand}
 
 
 # ---------------------------------------------------------------------------
@@ -2496,8 +2500,6 @@ async def add_kb_document(tenant_id: str, title: str, content: str):
         "metadata": {}
     }
     
-    if not hasattr(tenant, 'kb_documents'):
-        tenant.kb_documents = []
     tenant.kb_documents.append(document)
     
     return {"id": doc_id, "message": "Document added to knowledge base"}
@@ -2510,15 +2512,14 @@ async def query_kb(query: str, tenant_id: str):
         raise HTTPException(status_code=404, detail="Tenant not found")
     
     results = []
-    if hasattr(tenant, 'kb_documents'):
-        for doc in tenant.kb_documents:
-            if query.lower() in doc['content'].lower() or query.lower() in doc['title'].lower():
-                results.append({
-                    "id": doc['id'],
-                    "title": doc['title'],
-                    "content": doc['content'][:200] + "...",
-                    "score": 0.8
-                })
+    for doc in tenant.kb_documents:
+        if query.lower() in doc['content'].lower() or query.lower() in doc['title'].lower():
+            results.append({
+                "id": doc['id'],
+                "title": doc['title'],
+                "content": doc['content'][:200] + "...",
+                "score": 0.8
+            })
     
     return {"results": results}
 
