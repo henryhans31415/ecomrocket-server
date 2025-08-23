@@ -35,10 +35,6 @@ resets when the process restarts. Replace with a real database
 (e.g. Postgres or Supabase) for production use.
 """
 
-from fastapi.responses import HTMLResponse
-import os
-
-
 from __future__ import annotations
 
 import json
@@ -767,44 +763,6 @@ def root(request: Request) -> HTMLResponse:
             return HTMLResponse(f.read())
     except FileNotFoundError:
         return HTMLResponse("<h1>Marketing page not found</h1>")
-
-    """Serve a basic landing page at the service root.
-
-    When a user navigates to the root domain (e.g. https://ecomrocket.ai/ or
-    https://eazymode.ai/) this handler returns a small HTML page with a
-    welcome message and a link to the API docs.  Without this handler the
-    backend would respond with a 404 error for the root path.
-
-    Returns:
-        HTML containing a welcome header and a link to the API docs.
-    """
-    return """
-    <!DOCTYPE html>
-    <html lang="en">
-      <head>
-        <meta charset="utf-8" />
-        <title>Eazymode / Ecomrocket Coaching API</title>
-        <style>
-          body { font-family: sans-serif; margin: 2rem; line-height: 1.6; }
-          h1 { color: #333; }
-          a { color: #0055a5; text-decoration: none; }
-          a:hover { text-decoration: underline; }
-        </style>
-      </head>
-      <body>
-        <h1>Welcome to the Eazymode / Ecomrocket Coaching API</h1>
-        <p>
-          This service powers the coaching programs offered by
-          <strong>ecomrocket.ai</strong> and our white‑label
-          platform <strong>eazymode.ai</strong>.
-        </p>
-        <p>
-          To explore the available endpoints and try them out interactively,
-          visit the <a href="/docs">API documentation</a>.
-        </p>
-      </body>
-    </html>
-    """
 
 
 class OnboardRequest(BaseModel):
