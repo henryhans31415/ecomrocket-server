@@ -744,6 +744,18 @@ app.mount(
     name="dashboard",
 )
 
+app.mount(
+    "/assets",
+    StaticFiles(directory=os.path.join(os.path.dirname(__file__), "frontend", "marketing", "eazymode", "assets")),
+    name="eazymode_assets",
+)
+
+app.mount(
+    "/ecomrocket-assets", 
+    StaticFiles(directory=os.path.join(os.path.dirname(__file__), "frontend", "marketing", "ecomrocket")),
+    name="ecomrocket_assets",
+)
+
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 def root(request: Request) -> HTMLResponse:
     """
