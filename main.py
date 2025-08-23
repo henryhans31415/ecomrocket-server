@@ -990,6 +990,15 @@ def root(request: Request) -> HTMLResponse:
         return HTMLResponse("<h1>Marketing page not found</h1>")
 
 
+@app.get("/app", include_in_schema=False)
+def app_redirect(request: Request):
+    """
+    Redirect broken app.eazymode.ai links to the dashboard.
+    This handles the broken "Get started" buttons on the Eazymode marketing page.
+    """
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/dashboard/index.html", status_code=302)
+
 @app.get("/{path:path}", response_class=HTMLResponse, include_in_schema=False)
 def spa_fallback(request: Request, path: str) -> HTMLResponse:
     """
