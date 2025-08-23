@@ -777,6 +777,27 @@ def root(request: Request) -> HTMLResponse:
         return HTMLResponse("<h1>Marketing page not found</h1>")
 
 
+@app.get("/{path:path}", response_class=HTMLResponse, include_in_schema=False)
+def spa_fallback(request: Request, path: str) -> HTMLResponse:
+    """
+    Catch-all route for React SPA routing. Serves the appropriate index.html
+    for any unmatched paths to enable client-side routing.
+    """
+    host = request.headers.get("host", "").lower()
+    folder = "eazymode"
+    if "ecomrocket" in host:
+        folder = "ecomrocket"
+    base_dir = os.path.dirname(__file__)
+    index_file_path = os.path.join(
+        base_dir, "frontend", "marketing", folder, "index.html"
+    )
+    try:
+        with open(index_file_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+    except FileNotFoundError:
+        return HTMLResponse("<h1>Marketing page not found</h1>")
+
+
 class OnboardRequest(BaseModel):
     """Request body for onboarding a new user."""
     user_id: str
