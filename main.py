@@ -797,7 +797,6 @@ def spa_fallback(request: Request, path: str) -> HTMLResponse:
     except FileNotFoundError:
         return HTMLResponse("<h1>Marketing page not found</h1>")
 
-
 class OnboardRequest(BaseModel):
     """Request body for onboarding a new user."""
     user_id: str
