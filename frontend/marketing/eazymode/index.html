@@ -65,31 +65,50 @@
     <!-- This is a replit script which adds a banner on the top of the page when opened in development mode outside the replit environment -->
     <script type="text/javascript" src="https://replit.com/public/js/replit-dev-banner.js"></script>
     
-    <!-- Fix broken links that point to app.eazymode.ai -->
+    <!-- Fix broken app.eazymode.ai links by intercepting and redirecting them -->
     <script>
-      document.addEventListener('DOMContentLoaded', function() {
-        // Intercept clicks to app.eazymode.ai and redirect to dashboard
-        document.addEventListener('click', function(e) {
-          const target = e.target.closest('a');
-          if (target && target.href && target.href.includes('app.eazymode.ai')) {
-            e.preventDefault();
-            window.location.href = '/dashboard/index.html';
-          }
+      // Wait for React app to fully load, then fix all broken links
+      function fixBrokenLinks() {
+        // Find all links that point to app.eazymode.ai and fix them
+        const links = document.querySelectorAll('a[href*="app.eazymode.ai"]');
+        links.forEach(link => {
+          link.href = '/dashboard/index.html';
+          console.log('Fixed broken link:', link);
         });
         
-        // Also fix any buttons that might trigger window.location changes
-        const buttons = document.querySelectorAll('button');
-        buttons.forEach(button => {
-          button.addEventListener('click', function(e) {
-            // Check if this button's click handler would redirect to app.eazymode.ai
-            const onClick = this.getAttribute('onclick');
-            if (onClick && onClick.includes('app.eazymode.ai')) {
-              e.preventDefault();
-              window.location.href = '/dashboard/index.html';
-            }
-          });
+        // Also intercept any programmatic navigation attempts
+        const originalOpen = window.open;
+        window.open = function(url, ...args) {
+          if (url && url.includes('app.eazymode.ai')) {
+            window.location.href = '/dashboard/index.html';
+            return null;
+          }
+          return originalOpen.apply(this, [url, ...args]);
+        };
+        
+        // Intercept location changes
+        const originalAssign = window.location.assign;
+        window.location.assign = function(url) {
+          if (url && url.includes('app.eazymode.ai')) {
+            window.location.href = '/dashboard/index.html';
+            return;
+          }
+          return originalAssign.call(this, url);
+        };
+      }
+      
+      // Run the fix after DOM is loaded and React has rendered
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', function() {
+          // Wait a bit more for React to render
+          setTimeout(fixBrokenLinks, 1000);
         });
-      });
+      } else {
+        setTimeout(fixBrokenLinks, 1000);
+      }
+      
+      // Also run periodically to catch any dynamically created links
+      setInterval(fixBrokenLinks, 2000);
     </script>
   </body>
 </html>
